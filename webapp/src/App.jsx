@@ -77,7 +77,11 @@ function Brand() {
     <div className="brand brand-modern">
       <div className="brand-wordmark">
         <span className="brand-dot" />
+codex/fix-error
         <span className="brand-name">KAUVIO<span className="brand-point">.</span></span>
+
+        <span className="brand-name">KAUVIO</span>
+main
       </div>
     </div>
   )
@@ -871,7 +875,11 @@ export default function App() {
       <Header />
       <main className="content home-content">
         <section className="panel home-simple">
+codex/fix-error
           <div className="home-logo">KAUVIO<span className="brand-point">.</span></div>
+
+          <div className="home-logo">KAUVIO</div>
+ main
           <p className="home-subtitle">Preisvergleich Schweiz</p>
           <h1 className="home-title">Suche. Vergleiche. Kaufe direkt.</h1>
           <div className="search-shell hero-search home-search-centered">
