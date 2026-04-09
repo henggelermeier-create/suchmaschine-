@@ -1,5 +1,6 @@
 import { Pool } from "pg"
 import { JSDOM } from "jsdom"
+import { ensureCoreSchema } from "../../database/ensure_schema.mjs"
 
 function normalizeDbUrl(raw) {
   const fallback = `postgresql://${process.env.POSTGRES_USER || 'kauvio'}:${process.env.POSTGRES_PASSWORD || 'replace_me'}@postgres:5432/${process.env.POSTGRES_DB || 'kauvio'}`
@@ -472,45 +473,38 @@ async function upsertOffer(product) {
   await pool.query(
     `
       INSERT INTO products (
-        slug, title, brand, category, description, price, currency, price_level, deal_score, ai_summary,
-        shop_name, product_url, image_url, source_name, source_external_id, updated_at, last_seen_at
+        slug, title, brand, category, price, currency, deal_score, ai_summary,
+        shop_name, product_url, image_url, source_name, updated_at
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW()
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW()
       )
       ON CONFLICT (slug) DO UPDATE SET
         title = EXCLUDED.title,
         brand = COALESCE(EXCLUDED.brand, products.brand),
         category = COALESCE(EXCLUDED.category, products.category),
-        description = COALESCE(EXCLUDED.description, products.description),
         price = LEAST(COALESCE(products.price, EXCLUDED.price), EXCLUDED.price),
         currency = EXCLUDED.currency,
-        price_level = EXCLUDED.price_level,
         deal_score = GREATEST(COALESCE(products.deal_score, 0), EXCLUDED.deal_score),
         ai_summary = EXCLUDED.ai_summary,
         shop_name = EXCLUDED.shop_name,
         product_url = COALESCE(EXCLUDED.product_url, products.product_url),
         image_url = COALESCE(EXCLUDED.image_url, products.image_url),
         source_name = EXCLUDED.source_name,
-        source_external_id = COALESCE(EXCLUDED.source_external_id, products.source_external_id),
-        updated_at = NOW(),
-        last_seen_at = NOW()
+        updated_at = NOW()
     `,
     [
       product.slug,
       product.title,
       product.brand,
       product.category,
-      product.description,
       product.offer_price,
       product.offer_currency,
-      product.price_level,
       product.deal_score,
       product.ai_summary,
       product.offer_shop_name,
       product.offer_url,
       product.image_url,
-      product.source_name,
-      product.source_external_id,
+      product.source_name
     ]
   )
 
@@ -726,11 +720,19 @@ async function processManualJobs() {
   }
 }
 
-setTimeout(() => { runAll('fast').catch(console.error) }, 5000)
-setTimeout(() => { runAll('full').catch(console.error) }, 15000)
-setInterval(() => { runAll('fast').catch(console.error) }, FAST_INTERVAL * 1000)
-setInterval(() => { runAll('full').catch(console.error) }, FULL_INTERVAL * 1000)
-setInterval(() => { processManualJobs().catch(console.error) }, 15000)
-setInterval(() => { processDiscoveryQueue().catch(console.error) }, 20000)
-processManualJobs().catch(console.error)
-processDiscoveryQueue().catch(console.error)
+async function startCrawler() {
+  await ensureCoreSchema(pool)
+  setTimeout(() => { runAll('fast').catch(console.error) }, 5000)
+  setTimeout(() => { runAll('full').catch(console.error) }, 15000)
+  setInterval(() => { runAll('fast').catch(console.error) }, FAST_INTERVAL * 1000)
+  setInterval(() => { runAll('full').catch(console.error) }, FULL_INTERVAL * 1000)
+  setInterval(() => { processManualJobs().catch(console.error) }, 15000)
+  setInterval(() => { processDiscoveryQueue().catch(console.error) }, 20000)
+  processManualJobs().catch(console.error)
+  processDiscoveryQueue().catch(console.error)
+}
+
+startCrawler().catch(err => {
+  console.error('[crawler] startup failed', err)
+  process.exit(1)
+})
