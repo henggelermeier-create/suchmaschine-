@@ -22,6 +22,7 @@ const BROWSER_HEADERS = {
 }
 
 const TITLE_BRAND_RE = /(Apple|Samsung|Google|Xiaomi|Sony|Nokia|Motorola|Asus|Lenovo|HP|Acer|Dell|MSI|Jabra|Bose|Nothing|Honor|Huawei|Fairphone|Microsoft)/i
+const DIGITEC_LINK_RE = /(?:digitec|galaxus)\.ch\/.+\/(product|s1\/product)\//i
 
 const sources = {
   digitec: {
@@ -52,20 +53,32 @@ function categoryFromUrl(url){
 }
 function maybeAbsolute(base, href){ try { return new URL(href, base).toString() } catch { return null } }
 function buildSlug(title, brand){ return slugify(`${brand || brandFromTitle(title) || ''} ${title}`) }
-
 function isLikelyTitle(line='') {
   const value = clean(line)
-  if (!value || value.length < 4 || value.length > 160) return false
+  if (!value || value.length < 4 || value.length > 180) return false
   if (/^CHF\s*\d/i.test(value)) return false
   if (/^(Image:|Energielabel|Das meinen unsere Kunden|Pro|Contra|mehr|alle angebote anzeigen|In unserem Showroom|i|Smartphone|Notebook|Headphones?|Kopfhörer|Bestseller|Tagesangebot)$/i.test(value)) return false
   return TITLE_BRAND_RE.test(value)
 }
-
 function isLikelySpecLine(line='') {
   const value = clean(line)
-  return /\b(GB|TB|SIM|eSIM|5G|4G|Wi-?Fi|Bluetooth|CH|Black|Blue|Green|Navy|Titanium|Dual SIM|"|\d+\.\d{2}\")\b/i.test(value)
+  return /\b(GB|TB|SIM|eSIM|5G|4G|Wi-?Fi|Bluetooth|CH|Black|Blue|Green|Navy|Titanium|Dual SIM|Intel|AMD|Ryzen|Core|Ultra|"|\d+\.\d{2}\")\b/i.test(value)
 }
-
+function normalizeAltText(alt='') {
+  return clean(String(alt || '').replace(/^Image:\s*/i, ''))
+}
+function parseAltParts(alt='') {
+  const cleanAlt = normalizeAltText(alt)
+  const match = cleanAlt.match(/^(.*?)\s*\((.*)\)$/)
+  if (!match) return { title: cleanAlt, specs: '' }
+  return { title: clean(match[1]), specs: clean(match[2]) }
+}
+function extractImageUrl(img) {
+  const srcset = img.getAttribute('srcset') || img.getAttribute('data-srcset') || ''
+  const firstSrcset = srcset.split(',')[0]?.trim()?.split(' ')[0] || null
+  const direct = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-image') || null
+  return direct || firstSrcset || null
+}
 function networkErrorMessage(url, primaryError, fallbackError) {
   const bits = []
   const pushErr = (label, err) => {
@@ -78,7 +91,6 @@ function networkErrorMessage(url, primaryError, fallbackError) {
   pushErr('https', fallbackError)
   return `Network request failed for ${url} | ${bits.join(' | ')}`
 }
-
 function requestViaHttps(url) {
   return new Promise((resolve, reject) => {
     const req = https.request(url, {
@@ -101,7 +113,6 @@ function requestViaHttps(url) {
     req.end()
   })
 }
-
 async function fetchHtml(url, attempts=3){
   let lastError
   for(let attempt=1; attempt<=attempts; attempt++){
@@ -131,14 +142,13 @@ async function fetchHtml(url, attempts=3){
   }
   throw lastError
 }
-
 function extractLinks(document, baseUrl){
   const out = []
   for (const a of document.querySelectorAll('a[href]')) {
     const href = maybeAbsolute(baseUrl, a.getAttribute('href'))
     const text = clean(a.textContent)
     if (!href || !text) continue
-    if (!/(?:digitec|galaxus)\.ch\/.+\/(product|s1\/product)\//i.test(href)) continue
+    if (!DIGITEC_LINK_RE.test(href)) continue
     out.push({ href, text })
   }
   return out
@@ -159,7 +169,64 @@ function dedupe(items){
   }
   return [...map.values()]
 }
-
+function buildItem({ title, specs = '', url, price, image_url, source_name, shop_name, category }) {
+  const cleanTitle = clean(title)
+  if (!isLikelyTitle(cleanTitle) || !price) return null
+  const full = clean(`${cleanTitle} ${specs}`)
+  const brand = brandFromTitle(cleanTitle)
+  return {
+    slug: buildSlug(full, brand),
+    title: full,
+    brand,
+    category,
+    description: `Live import von ${shop_name}`,
+    price,
+    currency: 'CHF',
+    price_level: `Live bei ${shop_name}`,
+    deal_score: 60,
+    ai_summary: `Aktueller Live-Preisimport von ${shop_name}.`,
+    shop_name,
+    product_url: url || null,
+    image_url: image_url || null,
+    source_name,
+    source_external_id: null,
+  }
+}
+function extractPriceFromText(text='') {
+  const match = String(text).match(/CHF\s*[0-9'.,]+/i)
+  return normalizePrice(match?.[0])
+}
+function extractDigitecItemsFromImages(document, pageUrl, source_name, shop_name) {
+  const category = categoryFromUrl(pageUrl)
+  const items = []
+  for (const img of document.querySelectorAll('img[alt]')) {
+    const rawAlt = normalizeAltText(img.getAttribute('alt') || '')
+    if (!rawAlt || !TITLE_BRAND_RE.test(rawAlt)) continue
+    const anchor = img.closest('a[href]')
+    const productUrl = maybeAbsolute(pageUrl, anchor?.getAttribute('href') || '')
+    if (productUrl && !DIGITEC_LINK_RE.test(productUrl)) continue
+    const { title, specs } = parseAltParts(rawAlt)
+    let container = anchor || img.parentElement
+    let price = null
+    for (let depth = 0; depth < 6 && container; depth++) {
+      price = extractPriceFromText(container.textContent || '')
+      if (price) break
+      container = container.parentElement
+    }
+    const item = buildItem({
+      title,
+      specs,
+      url: productUrl,
+      price,
+      image_url: extractImageUrl(img),
+      source_name,
+      shop_name,
+      category,
+    })
+    if (item) items.push(item)
+  }
+  return items
+}
 function extractDigitecItemsFromLines(lines, url, source_name, shop_name, links) {
   const items = []
   for (let i = 0; i < lines.length; i++) {
@@ -167,7 +234,6 @@ function extractDigitecItemsFromLines(lines, url, source_name, shop_name, links)
     if (!/^CHF\s*\d/i.test(current)) continue
     const price = normalizePrice(current)
     if (!price) continue
-
     let title = ''
     let specs = ''
     for (let j = i + 1; j <= Math.min(i + 8, lines.length - 1); j++) {
@@ -180,9 +246,8 @@ function extractDigitecItemsFromLines(lines, url, source_name, shop_name, links)
         break
       }
     }
-
     if (!title) {
-      for (let j = Math.max(0, i - 4); j < i; j++) {
+      for (let j = Math.max(0, i - 5); j < i; j++) {
         const candidate = clean(lines[j])
         if (isLikelyTitle(candidate)) {
           title = candidate
@@ -192,41 +257,30 @@ function extractDigitecItemsFromLines(lines, url, source_name, shop_name, links)
         }
       }
     }
-
-    if (!title) continue
-    const full = clean(`${title} ${specs}`)
-    const brand = brandFromTitle(title)
-    items.push({
-      slug: buildSlug(full, brand),
-      title: full,
-      brand,
-      category: categoryFromUrl(url),
-      description: `Live import von ${shop_name}`,
+    const item = buildItem({
+      title,
+      specs,
+      url: matchLink(links, `${title} ${specs}`) || matchLink(links, title),
       price,
-      currency: 'CHF',
-      price_level: `Live bei ${shop_name}`,
-      deal_score: 60,
-      ai_summary: `Aktueller Live-Preisimport von ${shop_name}.`,
-      shop_name,
-      product_url: matchLink(links, full) || matchLink(links, title),
       image_url: null,
       source_name,
-      source_external_id: null,
+      shop_name,
+      category: categoryFromUrl(url),
     })
+    if (item) items.push(item)
   }
   return items
 }
-
 async function importDigitecLike(url, source_name, shop_name){
   const html = await fetchHtml(url)
   const dom = new JSDOM(html)
   const document = dom.window.document
   const links = extractLinks(document, url)
   const lines = String(document.body?.textContent || html).split(/\n+/).map(clean).filter(Boolean)
-  const items = extractDigitecItemsFromLines(lines, url, source_name, shop_name, links)
-  return dedupe(items).slice(0, LIMIT)
+  const imageItems = extractDigitecItemsFromImages(document, url, source_name, shop_name)
+  const lineItems = extractDigitecItemsFromLines(lines, url, source_name, shop_name, links)
+  return dedupe([...imageItems, ...lineItems]).slice(0, LIMIT)
 }
-
 async function upsertProduct(item){
   await pool.query(`INSERT INTO products (slug,title,brand,category,description,price,currency,price_level,deal_score,ai_summary,shop_name,product_url,image_url,source_name,source_external_id,updated_at,last_seen_at)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW())
@@ -238,20 +292,17 @@ async function upsertProduct(item){
       image_url=COALESCE(EXCLUDED.image_url,products.image_url), source_name=EXCLUDED.source_name, source_external_id=COALESCE(EXCLUDED.source_external_id,products.source_external_id),
       updated_at=NOW(), last_seen_at=NOW()`,
     [item.slug,item.title,item.brand,item.category,item.description,item.price,item.currency,item.price_level,item.deal_score,item.ai_summary,item.shop_name,item.product_url,item.image_url,item.source_name,item.source_external_id])
-
   await pool.query(`INSERT INTO product_offers (product_slug,shop_name,price,currency,product_url,image_url,source_name,updated_at,last_seen_at)
     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NOW())
     ON CONFLICT (product_slug, shop_name) DO UPDATE SET
       price=EXCLUDED.price, currency=EXCLUDED.currency, product_url=COALESCE(EXCLUDED.product_url,product_offers.product_url), image_url=COALESCE(EXCLUDED.image_url,product_offers.image_url), source_name=EXCLUDED.source_name, updated_at=NOW(), last_seen_at=NOW()`,
     [item.slug,item.shop_name,item.price,item.currency,item.product_url,item.image_url,item.source_name])
 }
-
 async function refreshCanonicalPricing(){
   await pool.query(`UPDATE products p SET price=x.min_price,currency=x.currency,shop_name=x.shop_name,product_url=x.product_url,updated_at=NOW()
     FROM (SELECT DISTINCT ON (o.product_slug) o.product_slug,o.price AS min_price,o.currency,o.shop_name,o.product_url FROM product_offers o ORDER BY o.product_slug,o.price ASC,o.updated_at DESC) x
     WHERE p.slug=x.product_slug`)
 }
-
 async function runSource(source_name, mode='fast'){
   const source = sources[source_name]
   let itemsFound = 0
@@ -275,7 +326,6 @@ async function runSource(source_name, mode='fast'){
   await pool.query('INSERT INTO crawler_runs(source_name,status,items_found,items_written,error_message) VALUES ($1,$2,$3,$4,$5)', [`${source_name}-${mode}`, itemsWritten>0?'success':'failed', itemsFound, itemsWritten, itemsWritten>0?null:`No products imported (${errors} source errors)`]).catch(()=>{})
   console.log(`[crawler] ${source_name} ${mode} done ${itemsWritten}/${itemsFound}`)
 }
-
 async function processManualJobs(){
   const result = await pool.query(`SELECT id, source_name, mode FROM crawl_jobs WHERE status='pending' ORDER BY requested_at ASC LIMIT 5`).catch(()=>({rows:[]}))
   for (const job of result.rows) {
@@ -296,7 +346,6 @@ async function processManualJobs(){
     }
   }
 }
-
 async function start(){
   await ensureCoreSchema(pool)
   console.log(`[crawler] fetch timeout is ${FETCH_TIMEOUT_MS}ms`)
@@ -312,7 +361,6 @@ async function start(){
   setInterval(() => { processManualJobs().catch(console.error) }, 15000)
   processManualJobs().catch(console.error)
 }
-
 start().catch(err => {
   console.error('[crawler] startup failed', err)
   process.exit(1)
