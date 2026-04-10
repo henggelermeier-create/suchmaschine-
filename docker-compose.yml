@@ -33,7 +33,7 @@ services:
   crawler:
     build:
       context: .
-      dockerfile: services/crawler/Dockerfile
+      dockerfile: services/crawler/Dockerfile.timeout
     container_name: kauvio_crawler
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
