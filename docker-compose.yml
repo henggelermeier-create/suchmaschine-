@@ -47,8 +47,8 @@ services:
       CRAWLER_FETCH_TIMEOUT_MS: 120000
       CRAWLER_AUTO_START_FAST: "false"
       CRAWLER_AUTO_START_FULL: "false"
-      DIGITEC_IMPORT_URLS: https://www.digitec.ch/de/s1/producttype/toplist/relevance/smartphones-24,https://www.digitec.ch/de/s1/producttype/toplist/relevance/notebook-6
-      GALAXUS_IMPORT_URLS: https://www.galaxus.ch/de/s1/producttype/toplist/relevance/smartphones-24,https://www.galaxus.ch/de/s1/producttype/toplist/relevance/notebook-6
+      DIGITEC_IMPORT_URLS: https://www.digitec.ch/de/s1/producttype/smartphone-24,https://www.digitec.ch/de/s1/producttype/notebook-6,https://www.digitec.ch/de/s1/producttype/kopfhoerer-48,https://www.digitec.ch/de/s1/producttype/staubsauger-118
+      GALAXUS_IMPORT_URLS: https://www.galaxus.ch/de/s1/producttype/smartphone-24,https://www.galaxus.ch/de/s1/producttype/notebook-6,https://www.galaxus.ch/de/s1/producttype/kopfhoerer-48,https://www.galaxus.ch/de/s2/producttype/staubsauger-118
     depends_on:
       - postgres
       - redis
