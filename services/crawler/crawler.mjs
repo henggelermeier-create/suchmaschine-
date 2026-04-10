@@ -72,10 +72,7 @@ function categoryFromUrl(url) {
   try {
     const pathname = new URL(url).pathname
     const last = pathname.split('/').filter(Boolean).pop() || 'produkte'
-    return last
-      .replace(/-\d+$/, '')
-      .replace(/-/g, ' ')
-      .replace(/\b\w/g, c => c.toUpperCase())
+    return last.replace(/-\d+$/, '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
   } catch {
     return 'Produkte'
   }
@@ -100,6 +97,13 @@ function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
+function linesFromBody(document, html) {
+  return String(document.body?.textContent || html)
+    .split(/\n+/)
+    .map(cleanText)
+    .filter(Boolean)
+}
+
 function extractStorageGb(title) {
   const text = cleanText(title).toUpperCase()
   const match = text.match(/(\d+)\s*(TB|GB)/i)
@@ -111,17 +115,12 @@ function extractStorageGb(title) {
 }
 
 function normalizeModelKey(title, brand) {
-  let text = cleanText(title)
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-
+  let text = cleanText(title).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
   const knownBrand = cleanText(brand || '').toLowerCase()
   if (knownBrand) {
     const escaped = knownBrand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     text = text.replace(new RegExp(`^${escaped}\\s+`, 'i'), '')
   }
-
   text = text
     .replace(/\((.*?)\)/g, ' $1 ')
     .replace(/\b(5g|4g|lte|wifi|bluetooth|cellular|dual sim|sim|esim|ohne vertrag|schweiz|schwarz|weiss|weiß|silber|grau|graphite|space grau|space gray|natural titanium|titanium|pink|blau|blue|green|violet|purple|black|white|silver|gold|red|gelb|yellow|orange|midnight|starlight)\b/gi, ' ')
@@ -130,7 +129,6 @@ function normalizeModelKey(title, brand) {
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-
   return text
 }
 
@@ -138,10 +136,7 @@ function buildMatchKey(title, brand) {
   const cleanBrand = cleanText(brand || brandFromTitle(title) || '')
   const model = normalizeModelKey(title, cleanBrand)
   const storageGb = extractStorageGb(title)
-  return [cleanBrand.toLowerCase(), model, storageGb ? `${storageGb}gb` : 'nostorage']
-    .filter(Boolean)
-    .join(' ')
-    .trim()
+  return [cleanBrand.toLowerCase(), model, storageGb ? `${storageGb}gb` : 'nostorage'].filter(Boolean).join(' ').trim()
 }
 
 function canonicalProduct(input) {
@@ -150,7 +145,6 @@ function canonicalProduct(input) {
   const category = cleanText(input.category || '') || null
   const matchKey = buildMatchKey(title, brand)
   const slugBase = matchKey || title
-
   return {
     slug: slugify(slugBase),
     match_key: matchKey,
@@ -195,6 +189,13 @@ function dedupeProducts(items) {
   return [...map.values()]
 }
 
+function isLikelyProductTitle(text) {
+  const value = cleanText(text)
+  if (value.length < 6) return false
+  if (/^(CHF|Aktion|Sortieren|Filtern|Merken|Vergleichen)$/i.test(value)) return false
+  return /(Apple|Samsung|Google|Xiaomi|Sony|Nokia|Motorola|Asus|Lenovo|HP|Acer|Dell|MSI|Jabra|Bose|JBL|Sennheiser|Nothing|Honor|Huawei|Dyson)/i.test(value)
+}
+
 async function fetchHtml(url, attempts = 3) {
   let lastError
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -215,18 +216,10 @@ async function fetchHtml(url, attempts = 3) {
     } catch (err) {
       clearTimeout(timeout)
       lastError = err
-      if (attempt < attempts) {
-        await new Promise(resolve => setTimeout(resolve, 1500 * attempt))
-      }
+      if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 1500 * attempt))
     }
   }
   throw lastError
-}
-function linesFromBody(document, html) {
-  return String(document.body?.textContent || html)
-    .split(/\n+/)
-    .map(cleanText)
-    .filter(Boolean)
 }
 
 function extractLinks(document, baseUrl, matcher) {
@@ -251,6 +244,36 @@ function matchLink(links, title) {
   return found?.href || null
 }
 
+function parseGenericCatalog(document, url, shopName, sourceName, score = 55) {
+  const category = categoryFromUrl(url)
+  const links = extractLinks(document, url, (href, text) => text.length > 6 && /product|\/p\d|\/product\//i.test(href))
+  const products = []
+  for (const link of links) {
+    if (!isLikelyProductTitle(link.text)) continue
+    const card = link.href
+    const priceNode = [...document.querySelectorAll('*')].find(el => cleanText(el.textContent).includes(link.text) && /CHF\s*[0-9'.,]+/i.test(cleanText(el.parentElement?.textContent || '')))
+    const priceText = cleanText(priceNode?.parentElement?.textContent || '')
+    const priceMatch = priceText.match(/CHF\s*[0-9'.,]+/i)
+    const price = normalizePrice(priceMatch?.[0])
+    if (!price) continue
+    products.push(normalizeOffer({
+      title: link.text,
+      brand: brandFromTitle(link.text),
+      category,
+      description: `Live import von ${shopName} (${category})`,
+      price,
+      currency: 'CHF',
+      price_level: `Live bei ${shopName}`,
+      deal_score: score,
+      ai_summary: `Aktueller Live-Preisimport von ${shopName}.`,
+      shop_name: shopName,
+      product_url: card,
+      source_name: sourceName,
+    }))
+  }
+  return products
+}
+
 async function importDigitecPage(url, limit) {
   const html = await fetchHtml(url)
   const dom = new JSDOM(html)
@@ -259,16 +282,13 @@ async function importDigitecPage(url, limit) {
   const links = extractLinks(document, url, (href) => /digitec\.ch\/.+\/(product|s1\/product)\//i.test(href))
   const category = categoryFromUrl(url)
   const products = []
-
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (!/^CHF\s*\d/i.test(line)) continue
-
     const price = normalizePrice(line)
     const title = cleanText(lines[i + 1])
     const specs = cleanText(lines[i + 2])
     if (!price || !title || /^CHF\s*\d/i.test(title) || title.length < 3) continue
-
     const fullTitle = cleanText(`${title} ${specs}`)
     products.push(normalizeOffer({
       title: fullTitle,
@@ -287,8 +307,8 @@ async function importDigitecPage(url, limit) {
       source_external_id: null,
     }))
   }
-
-  return dedupeProducts(products).slice(0, limit)
+  const fallback = !products.length ? parseGenericCatalog(document, url, 'Digitec', 'digitec', 57) : []
+  return dedupeProducts(products.length ? products : fallback).slice(0, limit)
 }
 
 function parseBrackFromScripts(html, url) {
@@ -296,9 +316,8 @@ function parseBrackFromScripts(html, url) {
   const products = []
   const hrefRegex = /https?:\/\/www\.brack\.ch\/[^"'\s<]+/gi
   const priceRegex = /CHF\s*[0-9'.,]+/gi
-  const titleRegex = /(Apple|Samsung|Google|Xiaomi|Sony|Nokia|Motorola|Asus|Lenovo|HP|Acer|Dell|MSI|Jabra|Bose)[^"'<>]{6,120}/gi
+  const titleRegex = /(Apple|Samsung|Google|Xiaomi|Sony|Nokia|Motorola|Asus|Lenovo|HP|Acer|Dell|MSI|Jabra|Bose|Dyson)[^"'<>]{6,120}/gi
   const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1])
-
   for (const chunk of scripts) {
     const links = [...chunk.matchAll(hrefRegex)].map(m => m[0])
     if (!links.length) continue
@@ -326,20 +345,17 @@ function parseBrackFromScripts(html, url) {
       }))
     }
   }
-
   return products
 }
 
 function parseBrackFromBody(document, url) {
   const category = categoryFromUrl(url)
-  const text = document.body?.textContent || ''
-  const lines = String(text).split(/\n+/).map(cleanText).filter(Boolean)
+  const lines = String(document.body?.textContent || '').split(/\n+/).map(cleanText).filter(Boolean)
   const products = []
-
   for (let i = 0; i < lines.length - 2; i++) {
     const title = lines[i]
     const maybePrice = lines[i + 1]
-    if (!/(Apple|Samsung|Google|Xiaomi|Sony|Nokia|Motorola|Asus|Lenovo|HP|Acer|Dell|MSI|Jabra|Bose)/i.test(title)) continue
+    if (!isLikelyProductTitle(title)) continue
     if (!/^CHF\s*[0-9'.,]+/i.test(maybePrice)) continue
     const price = normalizePrice(maybePrice)
     if (!price) continue
@@ -358,7 +374,6 @@ function parseBrackFromBody(document, url) {
       source_name: 'brack',
     }))
   }
-
   return products
 }
 
@@ -368,9 +383,9 @@ async function importBrackPage(url, limit) {
   const document = dom.window.document
   let products = parseBrackFromScripts(html, url)
   if (!products.length) products = parseBrackFromBody(document, url)
+  if (!products.length) products = parseGenericCatalog(document, url, 'BRACK', 'brack', 56)
   return dedupeProducts(products).slice(0, limit)
 }
-
 
 function parseInterdiscountFromLdJson(html, url) {
   const category = categoryFromUrl(url)
@@ -418,11 +433,10 @@ function parseInterdiscountFromBody(document, url) {
   const lines = linesFromBody(document, document.documentElement?.outerHTML || '')
   const links = extractLinks(document, url, (href) => /interdiscount\.ch\/.+--p[0-9]+/i.test(href))
   const products = []
-  const brandPattern = /(Apple|Samsung|Google|Xiaomi|Sony|Nokia|Motorola|Asus|Lenovo|HP|Acer|Dell|MSI|JBL|Bose|Sennheiser|Nothing|Honor|Huawei)/i
   for (let i = 0; i < lines.length - 2; i++) {
     const title = lines[i]
     const maybePrice = lines[i + 1]
-    if (!brandPattern.test(title)) continue
+    if (!isLikelyProductTitle(title)) continue
     if (!/^CHF\s*[0-9'.,]+/i.test(maybePrice)) continue
     const price = normalizePrice(maybePrice)
     if (!price) continue
@@ -450,71 +464,50 @@ async function importInterdiscountPage(url, limit) {
   const document = dom.window.document
   let products = parseInterdiscountFromLdJson(html, url)
   if (!products.length) products = parseInterdiscountFromBody(document, url)
+  if (!products.length) products = parseGenericCatalog(document, url, 'Interdiscount', 'interdiscount', 55)
   return dedupeProducts(products).slice(0, limit)
 }
 
 async function upsertOffer(product) {
-  await pool.query(
-    `
-      INSERT INTO products (
-        slug, title, brand, category, description, price, currency, price_level, deal_score, ai_summary,
-        shop_name, product_url, image_url, source_name, source_external_id, updated_at, last_seen_at
-      ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW()
-      )
-      ON CONFLICT (slug) DO UPDATE SET
-        title = EXCLUDED.title,
-        brand = COALESCE(EXCLUDED.brand, products.brand),
-        category = COALESCE(EXCLUDED.category, products.category),
-        description = COALESCE(EXCLUDED.description, products.description),
-        price = LEAST(COALESCE(products.price, EXCLUDED.price), EXCLUDED.price),
-        currency = EXCLUDED.currency,
-        price_level = EXCLUDED.price_level,
-        deal_score = GREATEST(COALESCE(products.deal_score, 0), EXCLUDED.deal_score),
-        ai_summary = EXCLUDED.ai_summary,
-        shop_name = EXCLUDED.shop_name,
-        product_url = COALESCE(EXCLUDED.product_url, products.product_url),
-        image_url = COALESCE(EXCLUDED.image_url, products.image_url),
-        source_name = EXCLUDED.source_name,
-        source_external_id = COALESCE(EXCLUDED.source_external_id, products.source_external_id),
-        updated_at = NOW(),
-        last_seen_at = NOW()
-    `,
-    [
-      product.slug,
-      product.title,
-      product.brand,
-      product.category,
-      product.description,
-      product.offer_price,
-      product.offer_currency,
-      product.price_level,
-      product.deal_score,
-      product.ai_summary,
-      product.offer_shop_name,
-      product.offer_url,
-      product.image_url,
-      product.source_name,
-      product.source_external_id,
-    ]
-  )
+  await pool.query(`
+    INSERT INTO products (
+      slug, title, brand, category, description, price, currency, price_level, deal_score, ai_summary,
+      shop_name, product_url, image_url, source_name, source_external_id, updated_at, last_seen_at
+    ) VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW()
+    )
+    ON CONFLICT (slug) DO UPDATE SET
+      title = EXCLUDED.title,
+      brand = COALESCE(EXCLUDED.brand, products.brand),
+      category = COALESCE(EXCLUDED.category, products.category),
+      description = COALESCE(EXCLUDED.description, products.description),
+      price = LEAST(COALESCE(products.price, EXCLUDED.price), EXCLUDED.price),
+      currency = EXCLUDED.currency,
+      price_level = EXCLUDED.price_level,
+      deal_score = GREATEST(COALESCE(products.deal_score, 0), EXCLUDED.deal_score),
+      ai_summary = EXCLUDED.ai_summary,
+      shop_name = EXCLUDED.shop_name,
+      product_url = COALESCE(EXCLUDED.product_url, products.product_url),
+      image_url = COALESCE(EXCLUDED.image_url, products.image_url),
+      source_name = EXCLUDED.source_name,
+      source_external_id = COALESCE(EXCLUDED.source_external_id, products.source_external_id),
+      updated_at = NOW(),
+      last_seen_at = NOW()
+  `, [product.slug, product.title, product.brand, product.category, product.description, product.offer_price, product.offer_currency, product.price_level, product.deal_score, product.ai_summary, product.offer_shop_name, product.offer_url, product.image_url, product.source_name, product.source_external_id])
 
-  await pool.query(
-    `
-      INSERT INTO product_offers (
-        product_slug, shop_name, price, currency, product_url, image_url, source_name, updated_at, last_seen_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NOW())
-      ON CONFLICT (product_slug, shop_name) DO UPDATE SET
-        price = EXCLUDED.price,
-        currency = EXCLUDED.currency,
-        product_url = COALESCE(EXCLUDED.product_url, product_offers.product_url),
-        image_url = COALESCE(EXCLUDED.image_url, product_offers.image_url),
-        source_name = EXCLUDED.source_name,
-        updated_at = NOW(),
-        last_seen_at = NOW()
-    `,
-    [product.slug, product.offer_shop_name, product.offer_price, product.offer_currency, product.offer_url, product.image_url, product.source_name]
-  )
+  await pool.query(`
+    INSERT INTO product_offers (
+      product_slug, shop_name, price, currency, product_url, image_url, source_name, updated_at, last_seen_at
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NOW())
+    ON CONFLICT (product_slug, shop_name) DO UPDATE SET
+      price = EXCLUDED.price,
+      currency = EXCLUDED.currency,
+      product_url = COALESCE(EXCLUDED.product_url, product_offers.product_url),
+      image_url = COALESCE(EXCLUDED.image_url, product_offers.image_url),
+      source_name = EXCLUDED.source_name,
+      updated_at = NOW(),
+      last_seen_at = NOW()
+  `, [product.slug, product.offer_shop_name, product.offer_price, product.offer_currency, product.offer_url, product.image_url, product.source_name])
 }
 
 async function refreshCanonicalPricing() {
@@ -543,32 +536,32 @@ async function runSource(sourceKey, mode) {
   const source = config[sourceKey]
   const urls = mode === 'fast' ? source.fastUrls : source.fullUrls
   if (!urls.length) return
-
   let itemsFound = 0
   let itemsWritten = 0
-
+  let importErrors = 0
   try {
     for (const url of urls) {
-      const products = await source.importer(url, source.limit)
-      itemsFound += products.length
-      for (const product of products) {
-        await upsertOffer(product)
-        itemsWritten += 1
+      try {
+        const products = await source.importer(url, source.limit)
+        itemsFound += products.length
+        console.log(`[crawler] ${source.sourceName} ${mode} ${url} -> ${products.length} products`)
+        for (const product of products) {
+          await upsertOffer(product)
+          itemsWritten += 1
+        }
+      } catch (err) {
+        importErrors += 1
+        console.error(`[crawler] ${source.sourceName} import failed for ${url}`, err)
       }
     }
-
     await refreshCanonicalPricing()
-    await pool.query(
-      'INSERT INTO crawler_runs(source_name, status, items_found, items_written) VALUES ($1,$2,$3,$4)',
-      [`${source.sourceName}-${mode}`, 'success', itemsFound, itemsWritten]
-    )
-    console.log(`[crawler] ${source.sourceName} ${mode} ok ${itemsWritten}/${itemsFound}`)
+    const status = itemsWritten > 0 ? 'success' : 'failed'
+    const errorMessage = itemsWritten > 0 ? null : `No products imported (${importErrors} source errors)`
+    await pool.query('INSERT INTO crawler_runs(source_name, status, items_found, items_written, error_message) VALUES ($1,$2,$3,$4,$5)', [`${source.sourceName}-${mode}`, status, itemsFound, itemsWritten, errorMessage])
+    console.log(`[crawler] ${source.sourceName} ${mode} done ${itemsWritten}/${itemsFound}`)
   } catch (err) {
     console.error(`[crawler] ${source.sourceName} ${mode} failed`, err)
-    await pool.query(
-      'INSERT INTO crawler_runs(source_name, status, items_found, items_written, error_message) VALUES ($1,$2,$3,$4,$5)',
-      [`${source.sourceName}-${mode}`, 'failed', itemsFound, itemsWritten, String(err.message || err)]
-    ).catch(() => {})
+    await pool.query('INSERT INTO crawler_runs(source_name, status, items_found, items_written, error_message) VALUES ($1,$2,$3,$4,$5)', [`${source.sourceName}-${mode}`, 'failed', itemsFound, itemsWritten, String(err.message || err)]).catch(() => {})
   }
 }
 
@@ -582,14 +575,10 @@ async function runAll(mode) {
       await runSource(source, mode)
     } catch (err) {
       console.error(`[crawler] ${source} ${mode} failed`, err)
-      await pool.query(
-        'INSERT INTO monitoring_events(service_name, level, message) VALUES ($1,$2,$3)',
-        ['crawler', 'error', `${source} ${mode} failed: ${String(err?.message || err)}`]
-      ).catch(() => {})
+      await pool.query('INSERT INTO monitoring_events(service_name, level, message) VALUES ($1,$2,$3)', ['crawler', 'error', `${source} ${mode} failed: ${String(err?.message || err)}`]).catch(() => {})
     }
   }
 }
-
 
 function extractLinksFromHtml(html = '', baseUrl = '') {
   const links = new Set()
@@ -607,106 +596,51 @@ function extractLinksFromHtml(html = '', baseUrl = '') {
 async function processDiscoveryQueue() {
   let rows = []
   try {
-    const result = await pool.query(`
-      SELECT id, source_name, source_group, page_url
-      FROM shop_discovery_queue
-      WHERE status = 'pending'
-      ORDER BY created_at ASC
-      LIMIT 5
-    `)
+    const result = await pool.query(`SELECT id, source_name, source_group, page_url FROM shop_discovery_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 5`)
     rows = result.rows
   } catch {
     return
   }
-
   for (const row of rows) {
     try {
-      const claimed = await pool.query(`
-        UPDATE shop_discovery_queue
-        SET status = 'running', updated_at = NOW()
-        WHERE id = $1 AND status = 'pending'
-        RETURNING id, source_name, source_group, page_url
-      `, [row.id])
-
+      const claimed = await pool.query(`UPDATE shop_discovery_queue SET status = 'running', updated_at = NOW() WHERE id = $1 AND status = 'pending' RETURNING id, source_name, source_group, page_url`, [row.id])
       if (!claimed.rows.length) continue
       const item = claimed.rows[0]
       const html = await fetchHtml(item.page_url)
       const links = extractLinksFromHtml(html, item.page_url).slice(0, 60)
-
       for (const link of links) {
         const pageType = /product|\/p\/|\/product\//i.test(link) ? 'product' : (/category|toplist|notebook|smartphone|headphones/i.test(link) ? 'category' : 'unknown')
-        await pool.query(`
-          INSERT INTO shop_discovery_queue(source_name, source_group, page_url, page_type, status, discovered_from, notes, created_at, updated_at)
-          VALUES ($1,$2,$3,$4,'pending',$5,$6,NOW(),NOW())
-          ON CONFLICT (source_name, page_url)
-          DO UPDATE SET updated_at = NOW()
-        `, [item.source_name, item.source_group || null, link, pageType, item.page_url, 'Auto-discovered from start link']).catch(() => {})
+        await pool.query(`INSERT INTO shop_discovery_queue(source_name, source_group, page_url, page_type, status, discovered_from, notes, created_at, updated_at) VALUES ($1,$2,$3,$4,'pending',$5,$6,NOW(),NOW()) ON CONFLICT (source_name, page_url) DO UPDATE SET updated_at = NOW()`, [item.source_name, item.source_group || null, link, pageType, item.page_url, 'Auto-discovered from start link']).catch(() => {})
       }
-
-      await pool.query(`
-        UPDATE shop_discovery_queue
-        SET status = 'success', updated_at = NOW(), notes = COALESCE(notes, 'Processed')
-        WHERE id = $1
-      `, [item.id])
+      await pool.query(`UPDATE shop_discovery_queue SET status = 'success', updated_at = NOW(), notes = COALESCE(notes, 'Processed') WHERE id = $1`, [item.id])
       console.log(`[crawler] discovery ok ${item.source_name} ${item.page_url}`)
     } catch (err) {
-      await pool.query(`
-        UPDATE shop_discovery_queue
-        SET status = 'failed', updated_at = NOW(), last_error = $2
-        WHERE id = $1
-      `, [row.id, String(err.message || err)]).catch(() => {})
+      await pool.query(`UPDATE shop_discovery_queue SET status = 'failed', updated_at = NOW(), last_error = $2 WHERE id = $1`, [row.id, String(err.message || err)]).catch(() => {})
       console.error('[crawler] discovery failed', err)
     }
   }
 }
 
-
 async function processManualJobs() {
   let jobs = []
   try {
-    const result = await pool.query(`
-      SELECT id, source_name, mode
-      FROM crawl_jobs
-      WHERE status = 'pending'
-      ORDER BY requested_at ASC
-      LIMIT 5
-    `)
+    const result = await pool.query(`SELECT id, source_name, mode FROM crawl_jobs WHERE status = 'pending' ORDER BY requested_at ASC LIMIT 5`)
     jobs = result.rows
   } catch {
     return
   }
-
   for (const job of jobs) {
     try {
-      const claimed = await pool.query(`
-        UPDATE crawl_jobs
-        SET status = 'running', started_at = NOW()
-        WHERE id = $1 AND status = 'pending'
-        RETURNING id, source_name, mode
-      `, [job.id])
-
+      const claimed = await pool.query(`UPDATE crawl_jobs SET status = 'running', started_at = NOW() WHERE id = $1 AND status = 'pending' RETURNING id, source_name, mode`, [job.id])
       if (!claimed.rows.length) continue
-
       const { source_name, mode } = claimed.rows[0]
-      if (source_name === 'all') {
-        await runAll(mode)
-      } else {
-        await runSource(source_name, mode)
-      }
-
-      await pool.query(`
-        UPDATE crawl_jobs
-        SET status = 'success', finished_at = NOW()
-        WHERE id = $1
-      `, [job.id])
+      if (source_name === 'all') await runAll(mode)
+      else await runSource(source_name, mode)
+      await pool.query(`UPDATE crawl_jobs SET status = 'success', finished_at = NOW() WHERE id = $1`, [job.id])
       console.log(`[crawler] manual job ok ${source_name} ${mode}`)
     } catch (err) {
       console.error('[crawler] manual job failed', err)
-      await pool.query(`
-        UPDATE crawl_jobs
-        SET status = 'failed', finished_at = NOW(), error_message = $2
-        WHERE id = $1
-      `, [job.id, String(err.message || err)]).catch(() => {})
+      await pool.query(`UPDATE crawl_jobs SET status = 'failed', finished_at = NOW(), error_message = $2 WHERE id = $1`, [job.id, String(err.message || err)]).catch(() => {})
     }
   }
 }
