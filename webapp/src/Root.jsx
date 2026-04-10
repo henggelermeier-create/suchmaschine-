@@ -44,22 +44,6 @@ export default function Root() {
 
   return (
     <div className="shell swiss-shell">
-      <header className="topbar topbar-pro swiss-topbar">
-        <a className="brandlink" href="#/">
-          <div className="brand brand-modern">
-            <div className="brand-wordmark">
-              <span className="brand-dot" />
-              <span className="brand-name">KAUVIO<span className="brand-point">.</span></span>
-            </div>
-          </div>
-        </a>
-        <nav className="nav swiss-nav">
-          <a href="#/">Startseite</a>
-          <a href="#/impressum">Impressum</a>
-          <a href="#/admin/login">Admin</a>
-        </nav>
-      </header>
-
       <HomePageProfessional
         query={query}
         setQuery={setQuery}
