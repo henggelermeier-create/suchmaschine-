@@ -82,6 +82,14 @@ function guessPageType(url = '') {
   return 'unknown'
 }
 
+function normalizeJsonInput(value, fallback = {}) {
+  if (value && typeof value === 'object') return value
+  if (typeof value === 'string' && value.trim()) {
+    try { return JSON.parse(value) } catch { return fallback }
+  }
+  return fallback
+}
+
 async function enqueueDiscoveryLinksForSource(source) {
   const urls = parseStartUrls(source.start_urls || source.base_url || '')
   const added = []
@@ -98,6 +106,45 @@ async function enqueueDiscoveryLinksForSource(source) {
     added.push(result.rows[0])
   }
   return added
+}
+
+async function getAiControls() {
+  const result = await pool.query(`
+    SELECT control_key, is_enabled, control_value_json, description, updated_by, updated_at
+    FROM ai_runtime_controls
+    ORDER BY control_key ASC
+  `).catch(() => ({ rows: [] }))
+  return result.rows
+}
+
+async function getSwissSourcesAdmin() {
+  const result = await pool.query(`
+    SELECT source_key, display_name, provider_kind, source_kind, country_code, language_code, base_url,
+           priority, confidence_score, refresh_interval_minutes, is_active, source_size, is_small_shop,
+           discovery_weight, runtime_score, manual_boost, last_runtime_status, last_runtime_error, last_runtime_at,
+           categories_json, notes, updated_at
+    FROM swiss_sources
+    ORDER BY priority DESC, confidence_score DESC, display_name ASC
+  `).catch(() => ({ rows: [] }))
+  return result.rows
+}
+
+async function getAiRuntimeEvents() {
+  const result = await pool.query(`
+    SELECT id, event_type, source_key, severity, event_payload_json, created_by, created_at
+    FROM ai_runtime_events
+    ORDER BY created_at DESC
+    LIMIT 50
+  `).catch(() => ({ rows: [] }))
+  return result.rows
+}
+
+async function logAiRuntimeEvent(eventType, sourceKey, severity = 'info', payload = {}, createdBy = 'system') {
+  await pool.query(
+    `INSERT INTO ai_runtime_events(event_type, source_key, severity, event_payload_json, created_by, created_at)
+     VALUES ($1,$2,$3,$4,$5,NOW())`,
+    [eventType, sourceKey || null, severity, JSON.stringify(payload || {}), createdBy]
+  ).catch(() => {})
 }
 
 function buildAssistantPlan(message = '') {
@@ -124,8 +171,14 @@ function buildAssistantPlan(message = '') {
     if (text.includes('interdiscount')) source_name = 'interdiscount'
     actions.push({ type: 'run_discovery', source_name })
   }
+  if (/(kleine shops|small shops|kleinere shops).*(stärker|mehr|priori|boosten)/.test(text)) {
+    actions.push({ type: 'set_ai_control', control_key: 'small_shop_balance', patch: { min_small_shops: 3, boost: 24 } })
+  }
+  if (/(runtime|laufzeit).*(notiz|note|merken|merken)/.test(text)) {
+    actions.push({ type: 'log_runtime_note', note: message })
+  }
   return {
-    summary: actions.length ? 'Vorgeschlagene sichere Backend-Aktionen erkannt.' : 'Keine sichere Aktion erkannt. Formuliere z. B. „Starte Digitec Fast Crawl“ oder „Finde Duplikate“.',
+    summary: actions.length ? 'Vorgeschlagene sichere Backend-Aktionen erkannt.' : 'Keine sichere Aktion erkannt. Formuliere z. B. „Starte Digitec Fast Crawl“, „Kleine Shops stärker gewichten“ oder „Systemstatus prüfen“.',
     actions
   }
 }
@@ -138,8 +191,10 @@ async function executeAssistantAction(action, requestedBy = 'admin') {
        RETURNING id, source_name, mode, status, requested_by, requested_at`,
       [action.source_name || 'all', action.mode || 'fast', requestedBy]
     )
+    await logAiRuntimeEvent('assistant_run_crawl', action.source_name || 'all', 'info', { mode: action.mode || 'fast' }, requestedBy)
     return { ok: true, type: action.type, job: inserted.rows[0] }
   }
+
   if (action.type === 'run_discovery') {
     let query = `SELECT source_name, source_group, display_name, base_url, start_urls FROM admin_shop_sources WHERE is_active = true`
     const params = []
@@ -153,8 +208,10 @@ async function executeAssistantAction(action, requestedBy = 'admin') {
       const added = await enqueueDiscoveryLinksForSource(source)
       items.push({ source_name: source.source_name, queued: added.length })
     }
+    await logAiRuntimeEvent('assistant_run_discovery', action.source_name || 'all', 'info', { queued: items }, requestedBy)
     return { ok: true, type: action.type, queued: items }
   }
+
   if (action.type === 'scan_duplicates') {
     const rows = await pool.query(`SELECT slug, title, brand, category FROM products ORDER BY updated_at DESC LIMIT 120`)
     const items = rows.rows
@@ -167,8 +224,10 @@ async function executeAssistantAction(action, requestedBy = 'admin') {
         if (score >= 0.62) found.push({ left: a.slug, right: b.slug, score: Number(score.toFixed(2)) })
       }
     }
+    await logAiRuntimeEvent('assistant_scan_duplicates', null, 'info', { matches: found.slice(0, 20) }, requestedBy)
     return { ok: true, type: action.type, matches: found.slice(0, 40) }
   }
+
   if (action.type === 'scan_system_health') {
     const checks = {}
     const countSafe = async (name, sql) => {
@@ -184,8 +243,30 @@ async function executeAssistantAction(action, requestedBy = 'admin') {
     await countSafe('search_tasks', 'SELECT COUNT(*)::int as c FROM search_tasks')
     await countSafe('canonical_products', 'SELECT COUNT(*)::int as c FROM canonical_products')
     await countSafe('swiss_sources', 'SELECT COUNT(*)::int as c FROM swiss_sources')
+    await logAiRuntimeEvent('assistant_system_health', null, 'info', checks, requestedBy)
     return { ok: true, type: action.type, checks }
   }
+
+  if (action.type === 'set_ai_control') {
+    const existing = await pool.query(`SELECT control_value_json FROM ai_runtime_controls WHERE control_key = $1 LIMIT 1`, [action.control_key]).catch(() => ({ rows: [] }))
+    const current = normalizeJsonInput(existing.rows[0]?.control_value_json, {})
+    const next = { ...current, ...normalizeJsonInput(action.patch, {}) }
+    const updated = await pool.query(
+      `UPDATE ai_runtime_controls
+       SET control_value_json = $2, updated_by = $3, updated_at = NOW()
+       WHERE control_key = $1
+       RETURNING control_key, is_enabled, control_value_json, description, updated_by, updated_at`,
+      [action.control_key, JSON.stringify(next), requestedBy]
+    ).catch(() => ({ rows: [] }))
+    await logAiRuntimeEvent('assistant_set_ai_control', action.control_key, 'info', { patch: action.patch, next }, requestedBy)
+    return { ok: true, type: action.type, control: updated.rows[0] || null }
+  }
+
+  if (action.type === 'log_runtime_note') {
+    await logAiRuntimeEvent('assistant_runtime_note', null, 'info', { note: action.note || '' }, requestedBy)
+    return { ok: true, type: action.type }
+  }
+
   return { ok: false, type: action.type, error: 'Unbekannte Aktion' }
 }
 
@@ -449,6 +530,86 @@ app.get('/api/admin/canonical-products', auth, async (req, res) => {
   res.json({ items: result.rows.map(r => ({ ...r, best_price: r.best_price != null ? Number(r.best_price) : null })) })
 })
 
+app.get('/api/admin/ai/controls', auth, async (_req, res) => {
+  res.json({ items: await getAiControls() })
+})
+
+app.put('/api/admin/ai/controls/:controlKey', auth, async (req, res) => {
+  const controlKey = String(req.params.controlKey || '').trim()
+  const isEnabled = typeof req.body?.is_enabled === 'boolean' ? req.body.is_enabled : true
+  const controlValueJson = normalizeJsonInput(req.body?.control_value_json, {})
+  const result = await pool.query(
+    `UPDATE ai_runtime_controls
+     SET is_enabled = $2, control_value_json = $3, updated_by = $4, updated_at = NOW()
+     WHERE control_key = $1
+     RETURNING control_key, is_enabled, control_value_json, description, updated_by, updated_at`,
+    [controlKey, isEnabled, JSON.stringify(controlValueJson), req.user?.email || 'admin']
+  ).catch(() => ({ rows: [] }))
+  if (!result.rows.length) return res.status(404).json({ error: 'AI-Control nicht gefunden.' })
+  await logAiRuntimeEvent('control_updated', controlKey, 'info', { is_enabled: isEnabled, control_value_json: controlValueJson }, req.user?.email || 'admin')
+  res.json({ ok: true, item: result.rows[0] })
+})
+
+app.get('/api/admin/ai/runtime-events', auth, async (_req, res) => {
+  res.json({ items: await getAiRuntimeEvents() })
+})
+
+app.post('/api/admin/ai/runtime-events', auth, async (req, res) => {
+  const eventType = String(req.body?.event_type || 'manual_note').trim()
+  const sourceKey = String(req.body?.source_key || '').trim() || null
+  const severity = String(req.body?.severity || 'info').trim() || 'info'
+  const payload = normalizeJsonInput(req.body?.event_payload_json, { note: String(req.body?.note || '') })
+  await logAiRuntimeEvent(eventType, sourceKey, severity, payload, req.user?.email || 'admin')
+  res.json({ ok: true })
+})
+
+app.get('/api/admin/swiss-sources', auth, async (_req, res) => {
+  res.json({ items: await getSwissSourcesAdmin() })
+})
+
+app.put('/api/admin/swiss-sources/:sourceKey', auth, async (req, res) => {
+  const sourceKey = String(req.params.sourceKey || '').trim().toLowerCase()
+  const body = req.body || {}
+  const result = await pool.query(
+    `UPDATE swiss_sources
+     SET priority = COALESCE($2, priority),
+         confidence_score = COALESCE($3, confidence_score),
+         refresh_interval_minutes = COALESCE($4, refresh_interval_minutes),
+         is_active = COALESCE($5, is_active),
+         source_size = COALESCE(NULLIF($6, ''), source_size),
+         is_small_shop = COALESCE($7, is_small_shop),
+         discovery_weight = COALESCE($8, discovery_weight),
+         runtime_score = COALESCE($9, runtime_score),
+         manual_boost = COALESCE($10, manual_boost),
+         last_runtime_status = COALESCE(NULLIF($11, ''), last_runtime_status),
+         last_runtime_error = $12,
+         last_runtime_at = CASE WHEN $11 IS NOT NULL OR $12 IS NOT NULL THEN NOW() ELSE last_runtime_at END,
+         updated_at = NOW()
+     WHERE source_key = $1
+     RETURNING source_key, display_name, provider_kind, source_kind, country_code, language_code, base_url,
+               priority, confidence_score, refresh_interval_minutes, is_active, source_size, is_small_shop,
+               discovery_weight, runtime_score, manual_boost, last_runtime_status, last_runtime_error, last_runtime_at,
+               categories_json, notes, updated_at`,
+    [
+      sourceKey,
+      body.priority != null ? Number(body.priority) : null,
+      body.confidence_score != null ? Number(body.confidence_score) : null,
+      body.refresh_interval_minutes != null ? Number(body.refresh_interval_minutes) : null,
+      typeof body.is_active === 'boolean' ? body.is_active : null,
+      body.source_size ?? null,
+      typeof body.is_small_shop === 'boolean' ? body.is_small_shop : null,
+      body.discovery_weight != null ? Number(body.discovery_weight) : null,
+      body.runtime_score != null ? Number(body.runtime_score) : null,
+      body.manual_boost != null ? Number(body.manual_boost) : null,
+      body.last_runtime_status ?? null,
+      body.last_runtime_error ?? null,
+    ]
+  ).catch(() => ({ rows: [] }))
+  if (!result.rows.length) return res.status(404).json({ error: 'Schweizer Quelle nicht gefunden.' })
+  await logAiRuntimeEvent('source_tuned', sourceKey, 'info', body, req.user?.email || 'admin')
+  res.json({ ok: true, item: result.rows[0] })
+})
+
 app.post('/api/admin/discovery/run', auth, async (req, res) => {
   const sourceName = String(req.body?.source_name || 'all').trim().toLowerCase()
   let query = `SELECT source_name, source_group, display_name, base_url, start_urls FROM admin_shop_sources WHERE is_active = true`
@@ -492,6 +653,8 @@ app.get('/api/admin/system-health', auth, async (_req, res) => {
   await countSafe('source_offers_v2', 'SELECT COUNT(*)::int as c FROM source_offers_v2')
   await countSafe('ai_merge_jobs', 'SELECT COUNT(*)::int as c FROM ai_merge_jobs')
   await countSafe('swiss_sources', 'SELECT COUNT(*)::int as c FROM swiss_sources')
+  await countSafe('ai_runtime_controls', 'SELECT COUNT(*)::int as c FROM ai_runtime_controls')
+  await countSafe('ai_runtime_events', 'SELECT COUNT(*)::int as c FROM ai_runtime_events')
   res.json({ ok: true, checks })
 })
 
