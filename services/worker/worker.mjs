@@ -1,12 +1,15 @@
+
 import { Pool } from 'pg'
 import { ensureCoreSchema } from '../../database/ensure_schema.mjs'
 import { normalizeDbUrl } from '../../database/normalize_db_url.mjs'
+import { runOpenWebDiscovery } from './open_web_discovery.mjs'
 
 const DATABASE_URL = normalizeDbUrl(process.env.DATABASE_URL)
 console.log('[worker] Using DB host from DATABASE_URL:', new URL(DATABASE_URL).hostname)
 const pool = new Pool({ connectionString: DATABASE_URL })
 const interval = Number(process.env.ALERT_CHECK_INTERVAL_SECONDS || 120)
 const AI_SEARCH_INTERVAL_SECONDS = Number(process.env.AI_SEARCH_WORKER_INTERVAL_SECONDS || 30)
+const FETCH_TIMEOUT_MS = Number(process.env.CRAWLER_FETCH_TIMEOUT_MS || 25000)
 const TOPPREISE_BASE = 'https://www.toppreise.ch/produktsuche?q='
 const TITLE_BRAND_RE = /(Apple|Samsung|Google|Xiaomi|Sony|Nokia|Motorola|Asus|Lenovo|HP|Acer|Dell|MSI|Jabra|Bose|Nothing|Honor|Huawei|Fairphone|Microsoft|DJI|Roborock|Philips|Logitech|Intel|Panasonic|Ecovacs|Dyson|Bambu|Sonos|Corsair)/i
 const BASELINE_SEEDS = [
@@ -102,6 +105,21 @@ function similarity(a = '', b = '') {
   return inter / union
 }
 
+function hostnameFromUrl(url = '') {
+  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, '') } catch { return '' }
+}
+
+function sanitizeSourceKey(input = '') {
+  const key = String(input || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  if (!key) return null
+  return /^\d/.test(key) ? `shop_${key}` : key
+}
+
+function titleFromHostname(hostname = '') {
+  const main = String(hostname || '').replace(/\.(ch|com|net|shop)$/i, '')
+  return main.split(/[.-]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ') || hostname
+}
+
 async function cycle() {
   try {
     await pool.query('INSERT INTO monitoring_events(service_name, level, message) VALUES ($1,$2,$3)', ['worker', 'info', 'Worker-Zyklus erfolgreich'])
@@ -116,6 +134,13 @@ async function loadRuntimeControls() {
   const map = new Map()
   for (const row of result.rows) map.set(row.control_key, row)
   return map
+}
+
+function engineIsRunning(controlMap = new Map()) {
+  const runtime = controlMap.get('engine_runtime')
+  if (runtime?.is_enabled === false) return false
+  const mode = String(runtime?.control_value_json?.mode || 'run').toLowerCase()
+  return mode !== 'pause' && mode !== 'stop'
 }
 
 async function loadPlannerSources() {
@@ -190,10 +215,7 @@ function pickDiverseSources(planned = [], controlMap = new Map()) {
   const used = new Set()
   const small = sorted.filter((item) => item.source.is_small_shop)
   const regular = sorted.filter((item) => !item.source.is_small_shop)
-  for (const item of small.slice(0, minSmall)) {
-    selected.push(item)
-    used.add(item.source.source_key)
-  }
+  for (const item of small.slice(0, minSmall)) { selected.push(item); used.add(item.source.source_key) }
   for (const item of regular) {
     if (selected.length >= 8) break
     if (used.has(item.source.source_key)) continue
@@ -243,7 +265,8 @@ async function createSearchTask(query, requestedBy = 'worker_autonomous', trigge
     reason: plannerReason(source, intentTags, controlMap, memory),
   }))
   const selected = pickDiverseSources(planned, controlMap)
-  for (const item of (selected.length ? selected : [{ source: { id: null, source_key: 'toppreise', source_kind: 'comparison_search' }, score: 100, reason: 'Fallback ohne Registry' }])) {
+  const finalSelection = selected.length ? selected : [{ source: { id: null, source_key: 'toppreise', source_kind: 'comparison_search' }, score: 100, reason: 'Fallback ohne Registry' }]
+  for (const item of finalSelection) {
     await pool.query(
       `INSERT INTO search_task_sources(search_task_id, provider, source_kind, seed_value, status, swiss_source_id, planner_reason, source_priority)
        VALUES ($1,$2,$3,$4,'pending',$5,$6,$7)`,
@@ -323,9 +346,9 @@ async function processAutonomousSeedCandidate(seed) {
   ).catch(() => {})
 }
 
-async function tickAutonomousBuilder() {
-  const controls = await loadRuntimeControls()
-  const autonomous = controls.get('autonomous_builder')
+async function tickAutonomousBuilder(controlMap) {
+  if (!engineIsRunning(controlMap)) return
+  const autonomous = controlMap.get('autonomous_builder')
   if (autonomous?.is_enabled === false) return
   const baselineLimit = Number(autonomous?.control_value_json?.baseline_limit || 12)
   const trendingLimit = Number(autonomous?.control_value_json?.trending_limit || 20)
@@ -339,15 +362,56 @@ async function tickAutonomousBuilder() {
   }
 }
 
-async function fetchText(url) {
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-      'Accept-Language': 'de-CH,de;q=0.9,en;q=0.8'
-    }
-  })
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
-  return await res.text()
+async function claimSearchTask() {
+  const result = await pool.query(
+    `UPDATE search_tasks
+     SET status = 'running', started_at = COALESCE(started_at, NOW()), updated_at = NOW()
+     WHERE id = (
+       SELECT id FROM search_tasks
+       WHERE status = 'pending'
+       ORDER BY task_priority DESC, created_at ASC
+       LIMIT 1
+       FOR UPDATE SKIP LOCKED
+     )
+     RETURNING *`
+  ).catch(() => ({ rows: [] }))
+  return result.rows[0] || null
+}
+
+async function claimTaskSource(taskId) {
+  const result = await pool.query(
+    `UPDATE search_task_sources
+     SET status = 'running', updated_at = NOW()
+     WHERE id = (
+       SELECT id FROM search_task_sources
+       WHERE search_task_id = $1 AND status = 'pending'
+       ORDER BY source_priority DESC, created_at ASC
+       LIMIT 1
+       FOR UPDATE SKIP LOCKED
+     )
+     RETURNING *`,
+    [taskId]
+  ).catch(() => ({ rows: [] }))
+  return result.rows[0] || null
+}
+
+async function fetchText(url, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+        'Accept-Language': 'de-CH,de;q=0.9,en;q=0.8',
+        Accept: 'text/html,application/xhtml+xml',
+      }
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
+    return await res.text()
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function parseToppreiseResults(html = '', query = '', pageUrl = '') {
@@ -363,10 +427,7 @@ function parseToppreiseResults(html = '', query = '', pageUrl = '') {
       const candidate = lines[j]
       if (!candidate || candidate.length > 180) continue
       if (/Produkt bewerten|Preisalarm hinzufügen|zum Vergleich hinzufügen|zur Wunschliste hinzufügen|günstigste Variante|weitere \d+ Produktvarianten anzeigen/i.test(candidate)) continue
-      if (TITLE_BRAND_RE.test(candidate)) {
-        title = candidate
-        break
-      }
+      if (TITLE_BRAND_RE.test(candidate)) { title = candidate; break }
     }
     if (!title) continue
     const brand = brandFromTitle(title)
@@ -430,10 +491,41 @@ async function ensureSourcePage(provider, pageUrl, sourceKind, pageType, rawPayl
   return result.rows[0]?.id || null
 }
 
-async function storeSourceOffers(taskId, source, offers, pageUrl) {
+async function registerDiscoveredShop(url, categories = [], discoverySourceKey = 'open_web_discovery') {
+  const host = hostnameFromUrl(url)
+  if (!host || !/\.ch$/i.test(host) || host === 'toppreise.ch' || host.endsWith('.toppreise.ch')) return null
+  const sourceKey = sanitizeSourceKey(host)
+  if (!sourceKey) return null
+  const existing = await pool.query(`SELECT id, source_key FROM swiss_sources WHERE source_key = $1 OR shop_domain = $2 LIMIT 1`, [sourceKey, host]).catch(() => ({ rows: [] }))
+  if (existing.rows[0]) return existing.rows[0]
+  const result = await pool.query(
+    `INSERT INTO swiss_sources(source_key, display_name, provider_kind, source_kind, country_code, language_code, base_url, seed_urls_json, categories_json, priority, confidence_score, refresh_interval_minutes, is_active, notes, source_size, is_small_shop, discovery_weight, runtime_score, manual_boost, shop_domain, auto_discovered, discovery_source_key, created_at, updated_at)
+     VALUES ($1,$2,'shop_source','shop_catalog','CH','de',$3,$4,$5,40,0.52,240,true,$6,'small',true,1.15,1.0,0.0,$7,true,$8,NOW(),NOW())
+     ON CONFLICT (source_key)
+     DO UPDATE SET shop_domain = COALESCE(swiss_sources.shop_domain, EXCLUDED.shop_domain), auto_discovered = TRUE, discovery_source_key = EXCLUDED.discovery_source_key, updated_at = NOW()
+     RETURNING id, source_key`,
+    [sourceKey, titleFromHostname(host), `https://${host}`, JSON.stringify([url]), JSON.stringify(categories || []), 'Automatisch aus offenem Web erkannt.', host, discoverySourceKey]
+  ).catch(() => ({ rows: [] }))
+  return result.rows[0] || null
+}
+
+async function insertWebDiscoveryResult(task, result, rank, extractedJson = {}, discoveredShop = false, discoveredProduct = false) {
+  await pool.query(
+    `INSERT INTO web_discovery_results(search_task_id, query, source_domain, page_url, result_title, snippet, result_rank, discovered_shop, discovered_product, extracted_json, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW())
+     ON CONFLICT (search_task_id, page_url)
+     DO UPDATE SET result_title = EXCLUDED.result_title, snippet = EXCLUDED.snippet, result_rank = EXCLUDED.result_rank, discovered_shop = EXCLUDED.discovered_shop OR web_discovery_results.discovered_shop, discovered_product = EXCLUDED.discovered_product OR web_discovery_results.discovered_product, extracted_json = EXCLUDED.extracted_json, updated_at = NOW()`,
+    [task.id, task.query, result.host || hostnameFromUrl(result.url), result.url, result.title || null, result.snippet || null, rank, discoveredShop, discoveredProduct, JSON.stringify(extractedJson || {})]
+  ).catch(() => {})
+}
+
+async function storeSourceOffers(taskId, source, offers, pageUrl, discoverySourceKey = 'task_source') {
   const sourcePageId = await ensureSourcePage(source.provider, pageUrl, source.source_kind, 'search_results', { query: source.seed_value, provider: source.provider })
   let inserted = 0
+  const categories = inferIntent(source.seed_value || '')
   for (const offer of offers) {
+    const targetUrl = offer.deeplink_url || offer.source_product_url || pageUrl
+    await registerDiscoveredShop(targetUrl, categories, discoverySourceKey).catch(() => {})
     await pool.query(
       `INSERT INTO source_offers_v2(canonical_product_id, source_page_id, provider, provider_group, offer_title, brand, category, model_key, ean_gtin, mpn, price, currency, availability, condition_text, image_url, deeplink_url, source_product_url, confidence_score, extraction_method, extracted_json, is_active, first_seen_at, last_seen_at, created_at, updated_at)
        VALUES (NULL,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,true,NOW(),NOW(),NOW(),NOW())`,
@@ -450,13 +542,14 @@ async function processTaskSource(task, source) {
     const url = `${TOPPREISE_BASE}${encodeURIComponent(task.query || source.seed_value)}`
     const html = await fetchText(url)
     const offers = parseToppreiseResults(html, task.query || source.seed_value, url)
-    const inserted = await storeSourceOffers(task.id, source, offers, url)
+    const inserted = await storeSourceOffers(task.id, source, offers, url, 'toppreise_source')
     await pool.query(`UPDATE search_task_sources SET status = 'success', discovered_count = $2, imported_count = $2, updated_at = NOW(), error_message = NULL WHERE id = $1`, [source.id, inserted]).catch(() => {})
     return { discovered: inserted, imported: inserted, sourceKey: source.provider }
   }
   const urls = sourceDiscoveryUrls(swissSource, source.seed_value)
   let discovered = 0
   for (const url of urls) {
+    await registerDiscoveredShop(url, inferIntent(task.query || ''), 'source_seed').catch(() => {})
     const sourcePageId = await ensureSourcePage(source.provider, url, source.source_kind, pageTypeFromUrl(url), {
       query: task.query,
       planner_reason: source.planner_reason,
@@ -568,10 +661,30 @@ async function rememberQueryLearning(task, successfulSourceKeys, resultCount, st
   ).catch(() => {})
 }
 
-async function processSearchTask(task) {
+async function processSearchTask(task, controlMap) {
   let discovered = 0
   let imported = 0
   const successfulSourceKeys = []
+
+  const openWebResult = await runOpenWebDiscovery({
+    pool,
+    task,
+    controlMap,
+    inferIntent,
+    clean,
+    brandFromTitle,
+    normalizePrice,
+    sanitizeSourceKey,
+    canonicalModelKey,
+    registerDiscoveredShop,
+    insertWebDiscoveryResult,
+    storeSourceOffers,
+    fetchText,
+  }).catch(() => ({ discovered: 0, imported: 0, sourceKeys: [] }))
+  discovered += openWebResult.discovered
+  imported += openWebResult.imported
+  successfulSourceKeys.push(...openWebResult.sourceKeys)
+
   while (true) {
     const source = await claimTaskSource(task.id)
     if (!source) break
@@ -584,6 +697,7 @@ async function processSearchTask(task) {
       await pool.query(`UPDATE search_task_sources SET status = 'failed', updated_at = NOW(), error_message = $2 WHERE id = $1`, [source.id, String(err.message || err)]).catch(() => {})
     }
   }
+
   const merged = await ensureCanonicalFromOffers(300)
   await refreshCanonicalPopularity()
   const finalImported = imported + merged
@@ -592,11 +706,12 @@ async function processSearchTask(task) {
   await rememberQueryLearning(task, successfulSourceKeys, finalImported, status)
 }
 
-async function tickAiSearch() {
+async function tickAiSearch(controlMap) {
+  if (!engineIsRunning(controlMap)) return
   const task = await claimSearchTask()
   if (!task) return
   try {
-    await processSearchTask(task)
+    await processSearchTask(task, controlMap)
   } catch (err) {
     await pool.query(`UPDATE search_tasks SET status = 'failed', finished_at = NOW(), updated_at = NOW(), error_message = $2 WHERE id = $1`, [task.id, String(err.message || err)]).catch(() => {})
   }
@@ -604,8 +719,9 @@ async function tickAiSearch() {
 
 await ensureCoreSchema(pool)
 await cycle()
-await tickAutonomousBuilder().catch(console.error)
-await tickAiSearch().catch(console.error)
+let initialControls = await loadRuntimeControls().catch(() => new Map())
+await tickAutonomousBuilder(initialControls).catch(console.error)
+await tickAiSearch(initialControls).catch(console.error)
 setInterval(cycle, interval * 1000)
-setInterval(() => { tickAutonomousBuilder().catch(console.error) }, Math.max(30, AI_SEARCH_INTERVAL_SECONDS) * 1000)
-setInterval(() => { tickAiSearch().catch(console.error) }, AI_SEARCH_INTERVAL_SECONDS * 1000)
+setInterval(async () => { const controls = await loadRuntimeControls().catch(() => new Map()); await tickAutonomousBuilder(controls).catch(console.error) }, Math.max(30, AI_SEARCH_INTERVAL_SECONDS) * 1000)
+setInterval(async () => { const controls = await loadRuntimeControls().catch(() => new Map()); await tickAiSearch(controls).catch(console.error) }, AI_SEARCH_INTERVAL_SECONDS * 1000)
