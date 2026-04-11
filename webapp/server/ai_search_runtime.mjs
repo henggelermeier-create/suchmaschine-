@@ -26,7 +26,27 @@ function inferIntent(query = '') {
   return [...new Set(tags)]
 }
 
-function sourceScore(source, intentTags = []) {
+async function loadPlannerSources(pool) {
+  const result = await pool.query(
+    `SELECT id, source_key, display_name, provider_kind, source_kind, base_url, search_url_template, sitemap_url, seed_urls_json, categories_json,
+            priority, confidence_score, refresh_interval_minutes, source_size, is_small_shop, discovery_weight, runtime_score, manual_boost
+     FROM swiss_sources
+     WHERE is_active = true
+     ORDER BY priority DESC, confidence_score DESC, display_name ASC`
+  ).catch(() => ({ rows: [] }))
+  return result.rows
+}
+
+async function loadRuntimeControls(pool) {
+  const result = await pool.query(
+    `SELECT control_key, is_enabled, control_value_json FROM ai_runtime_controls`
+  ).catch(() => ({ rows: [] }))
+  const map = new Map()
+  for (const row of result.rows) map.set(row.control_key, row)
+  return map
+}
+
+function sourceScore(source, intentTags = [], controlMap = new Map()) {
   const categories = Array.isArray(source.categories_json) ? source.categories_json : []
   let score = Number(source.priority || 0)
   for (const tag of intentTags) {
@@ -35,24 +55,25 @@ function sourceScore(source, intentTags = []) {
   if (source.provider_kind === 'comparison_source') score += 20
   if (source.source_kind === 'comparison_search') score += 15
   if (source.source_kind === 'shop_catalog') score += 8
+  score += Number(source.discovery_weight || 1) * 10
+  score += Number(source.runtime_score || 1) * 12
+  score += Number(source.manual_boost || 0) * 10
+
+  const balance = controlMap.get('small_shop_balance')
+  if (balance?.is_enabled && source.is_small_shop) {
+    const boost = Number(balance.control_value_json?.boost || 18)
+    score += boost
+  }
   return score
 }
 
-function plannerReason(source, intentTags = []) {
+function plannerReason(source, intentTags = [], controlMap = new Map()) {
   const matches = (Array.isArray(source.categories_json) ? source.categories_json : []).filter((tag) => intentTags.includes(tag))
+  const balance = controlMap.get('small_shop_balance')
+  if (source.is_small_shop && balance?.is_enabled) return 'Kleiner Schweizer Shop wird bewusst mitberücksichtigt'
   if (matches.length) return `Passend für ${matches.join(', ')}`
   if (source.provider_kind === 'comparison_source') return 'Vergleichsquelle für schnelle Discovery'
   return 'Schweizer Shopquelle für breites Discovery'
-}
-
-async function loadPlannerSources(pool) {
-  const result = await pool.query(
-    `SELECT id, source_key, display_name, provider_kind, source_kind, base_url, search_url_template, sitemap_url, seed_urls_json, categories_json, priority, confidence_score, refresh_interval_minutes
-     FROM swiss_sources
-     WHERE is_active = true
-     ORDER BY priority DESC, confidence_score DESC, display_name ASC`
-  ).catch(() => ({ rows: [] }))
-  return result.rows
 }
 
 function buildSeedValue(source, query) {
@@ -61,6 +82,35 @@ function buildSeedValue(source, query) {
   if (source.sitemap_url) return source.sitemap_url
   if (source.base_url) return source.base_url
   return query
+}
+
+function pickDiverseSources(planned = [], controlMap = new Map()) {
+  const balance = controlMap.get('small_shop_balance')
+  const minSmall = balance?.is_enabled ? Number(balance.control_value_json?.min_small_shops || 2) : 0
+  const sorted = [...planned].sort((a, b) => b.score - a.score)
+  const selected = []
+  const used = new Set()
+
+  const small = sorted.filter((item) => item.source.is_small_shop)
+  const regular = sorted.filter((item) => !item.source.is_small_shop)
+
+  for (const item of small.slice(0, minSmall)) {
+    selected.push(item)
+    used.add(item.source.source_key)
+  }
+  for (const item of regular) {
+    if (selected.length >= 8) break
+    if (used.has(item.source.source_key)) continue
+    selected.push(item)
+    used.add(item.source.source_key)
+  }
+  for (const item of small) {
+    if (selected.length >= 8) break
+    if (used.has(item.source.source_key)) continue
+    selected.push(item)
+    used.add(item.source.source_key)
+  }
+  return selected.length ? selected : sorted.slice(0, 8)
 }
 
 export async function enqueueLiveSearchTask(pool, query, requestedBy = 'public') {
@@ -94,13 +144,18 @@ export async function enqueueLiveSearchTask(pool, query, requestedBy = 'public')
 
   const task = inserted.rows[0]
   const intentTags = inferIntent(query)
-  const sources = await loadPlannerSources(pool)
-  const planned = sources
-    .map((source) => ({ source, score: sourceScore(source, intentTags), reason: plannerReason(source, intentTags) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 8)
+  const [sources, controlMap] = await Promise.all([
+    loadPlannerSources(pool),
+    loadRuntimeControls(pool),
+  ])
+  const planned = sources.map((source) => ({
+    source,
+    score: sourceScore(source, intentTags, controlMap),
+    reason: plannerReason(source, intentTags, controlMap),
+  }))
+  const selected = pickDiverseSources(planned, controlMap)
 
-  if (!planned.length) {
+  if (!selected.length) {
     await pool.query(
       `INSERT INTO search_task_sources(search_task_id, provider, source_kind, seed_value, status, planner_reason, source_priority)
        VALUES ($1,$2,$3,$4,'pending',$5,$6)`,
@@ -109,7 +164,7 @@ export async function enqueueLiveSearchTask(pool, query, requestedBy = 'public')
     return task
   }
 
-  for (const item of planned) {
+  for (const item of selected) {
     await pool.query(
       `INSERT INTO search_task_sources(search_task_id, provider, source_kind, seed_value, status, swiss_source_id, planner_reason, source_priority)
        VALUES ($1,$2,$3,$4,'pending',$5,$6,$7)`,
