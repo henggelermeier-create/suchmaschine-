@@ -1,4 +1,14 @@
 const EXCLUDED_DISCOVERY_HOSTS = ['toppreise.ch', 'duckduckgo.com', 'html.duckduckgo.com', 'lite.duckduckgo.com', 'google.com', 'bing.com', 'search.yahoo.com']
+const SHOP_HINTS = [
+  { host: 'brack.ch', brandHint: 'Brack' },
+  { host: 'interdiscount.ch', brandHint: 'Interdiscount' },
+  { host: 'microspot.ch', brandHint: 'Microspot' },
+  { host: 'mediamarkt.ch', brandHint: 'MediaMarkt' },
+  { host: 'fust.ch', brandHint: 'Fust' },
+  { host: 'melectronics.ch', brandHint: 'Melectronics' },
+  { host: 'galaxus.ch', brandHint: 'Galaxus' },
+  { host: 'digitec.ch', brandHint: 'Digitec' },
+]
 
 function decodeHtml(str = '') {
   return String(str || '')
@@ -65,6 +75,15 @@ function extractJsonLdCandidates(html = '') {
   return out
 }
 
+function extractVisibleText(html = '') {
+  return String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 function parseProductFromJsonLd(html = '', pageUrl = '', { clean, brandFromTitle, normalizePrice }) {
   const blocks = extractJsonLdCandidates(html)
   for (const block of blocks) {
@@ -111,6 +130,37 @@ function parseProductFromMeta(html = '', pageUrl = '', { clean, brandFromTitle, 
     deeplink_url: pageUrl,
     confidence_score: price && image ? 0.72 : 0.58,
     extraction_method: 'meta_fallback',
+  }
+}
+
+function parseProductFromShopHints(html = '', pageUrl = '', host = '', { clean, brandFromTitle, normalizePrice }) {
+  const visibleText = extractVisibleText(html)
+  const hasKnownHost = SHOP_HINTS.some((item) => host === item.host || host.endsWith(`.${item.host}`))
+  if (!hasKnownHost) return null
+
+  const title = clean(
+    getMeta(html, ['og:title']) ||
+    getTitleTag(html) ||
+    (visibleText.match(/([A-Z0-9][A-Za-z0-9+\-\/() ]{18,120})/)?.[1] || '')
+  )
+  const image = getMeta(html, ['og:image', 'twitter:image']) || null
+  const priceMatch = visibleText.match(/CHF\s?[0-9'.,]{2,20}/i)
+  const price = normalizePrice(priceMatch?.[0] || null)
+  if (!title || !price) return null
+
+  return {
+    title,
+    brand: brandFromTitle(title),
+    image_url: image,
+    price,
+    currency: 'CHF',
+    availability: null,
+    mpn: null,
+    ean_gtin: null,
+    source_product_url: pageUrl,
+    deeplink_url: pageUrl,
+    confidence_score: image ? 0.68 : 0.62,
+    extraction_method: 'shop_hint_fallback',
   }
 }
 
@@ -165,7 +215,6 @@ function buildOfferFromParsedProduct(parsed, url, host, query, { sanitizeSourceK
 }
 
 export async function runOpenWebDiscovery({
-  pool,
   task,
   controlMap,
   inferIntent,
@@ -226,7 +275,8 @@ export async function runOpenWebDiscovery({
     try {
       const html = await fetchText(item.url, searchTimeout)
       const parsed = parseProductFromJsonLd(html, item.url, { clean, brandFromTitle, normalizePrice }) ||
-        parseProductFromMeta(html, item.url, { clean, brandFromTitle, normalizePrice })
+        parseProductFromMeta(html, item.url, { clean, brandFromTitle, normalizePrice }) ||
+        parseProductFromShopHints(html, item.url, item.host, { clean, brandFromTitle, normalizePrice })
       const offer = buildOfferFromParsedProduct(parsed, item.url, item.host, task.query, { sanitizeSourceKey, brandFromTitle, canonicalModelKey })
       if (!offer) continue
       await storeSourceOffers(task.id, { provider: sanitizeSourceKey(item.host) || item.host, source_kind: 'open_web_product', seed_value: task.query }, [offer], item.url, 'open_web_product')
