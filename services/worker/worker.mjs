@@ -73,7 +73,7 @@ function clean(input = '') {
   return String(input || '').replace(/\s+/g, ' ').trim()
 }
 
-function normalizePrice(raw) {
+function normalizePrice(raw = '') {
   const cleaned = String(raw || '')
     .replace(/CHF/gi, '')
     .replace(/inkl\..*$/i, '')
@@ -665,11 +665,12 @@ async function processSearchTask(task, controlMap) {
   let discovered = 0
   let imported = 0
   const successfulSourceKeys = []
+  const plannerSources = await loadPlannerSources().catch(() => [])
 
   const openWebResult = await runOpenWebDiscovery({
-    pool,
     task,
     controlMap,
+    plannerSources,
     inferIntent,
     clean,
     brandFromTitle,

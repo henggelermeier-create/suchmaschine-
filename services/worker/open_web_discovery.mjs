@@ -47,7 +47,7 @@ function isExcludedDiscoveryHost(host = '') {
 }
 
 function looksLikeProductUrl(url = '') {
-  return /\/product|\/p\/|\/artikel|\/item|\/products?\/|\/dp\//i.test(String(url || ''))
+  return /\/product|\/p\/|\/artikel|\/item|\/products?\/|\/dp\/|\/buy\/|\/shop\//i.test(String(url || ''))
 }
 
 function getMeta(html = '', selectors = []) {
@@ -164,9 +164,9 @@ function parseProductFromShopHints(html = '', pageUrl = '', host = '', { clean, 
   }
 }
 
-function parseDuckDuckGoResults(html = '', query = '') {
+function parseDuckDuckGoResults(html = '', query = '', source = 'duckduckgo_html') {
   const results = []
-  const matches = [...String(html).matchAll(/<a[^>]+class=["'][^"']*(?:result__a|result-link)[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)]
+  const matches = [...String(html).matchAll(/<a[^>]+(?:class=["'][^"']*(?:result__a|result-link)[^"']*["'])?[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)]
   for (const match of matches) {
     let url = decodeHtml(match[1])
     const title = decodeHtml(match[2]).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
@@ -174,11 +174,39 @@ function parseDuckDuckGoResults(html = '', query = '') {
     if (uddg?.[1]) url = decodeURIComponent(uddg[1])
     const host = hostnameFromUrl(url)
     if (!url || !host || isExcludedDiscoveryHost(host) || !looksSwissDomain(host)) continue
-    results.push({ url, title, snippet: '', host, query, source: 'duckduckgo_html' })
+    if (!title || title.length < 8) continue
+    results.push({ url, title, snippet: '', host, query, source })
   }
   const unique = []
   const seen = new Set()
   for (const item of results) {
+    if (seen.has(item.url)) continue
+    seen.add(item.url)
+    unique.push(item)
+  }
+  return unique
+}
+
+function absolutizeUrl(baseUrl = '', href = '') {
+  try { return new URL(href, baseUrl).toString() } catch { return '' }
+}
+
+function parseGenericAnchorResults(html = '', pageUrl = '', query = '', source = 'direct_shop_search') {
+  const out = []
+  const baseHost = hostnameFromUrl(pageUrl)
+  const matches = [...String(html).matchAll(/<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)]
+  for (const match of matches) {
+    const url = absolutizeUrl(pageUrl, decodeHtml(match[1]))
+    const title = decodeHtml(match[2]).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    const host = hostnameFromUrl(url)
+    if (!url || !host || host !== baseHost) continue
+    if (!looksSwissDomain(host) || isExcludedDiscoveryHost(host)) continue
+    if (!title || title.length < 8) continue
+    out.push({ url, title, snippet: '', host, query, source })
+  }
+  const unique = []
+  const seen = new Set()
+  for (const item of out) {
     if (seen.has(item.url)) continue
     seen.add(item.url)
     unique.push(item)
@@ -214,9 +242,41 @@ function buildOfferFromParsedProduct(parsed, url, host, query, { sanitizeSourceK
   }
 }
 
+async function collectEngineResults({ task, searchTimeout, searchTerms, fetchText }) {
+  const allResults = []
+  for (const term of searchTerms) {
+    try {
+      const html = await fetchText(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`, searchTimeout)
+      allResults.push(...parseDuckDuckGoResults(html, task.query, 'duckduckgo_html'))
+    } catch {}
+    try {
+      const htmlLite = await fetchText(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(term)}`, searchTimeout)
+      allResults.push(...parseDuckDuckGoResults(htmlLite, task.query, 'duckduckgo_lite'))
+    } catch {}
+  }
+  return allResults
+}
+
+async function collectDirectShopResults({ task, plannerSources = [], searchTimeout, fetchText }) {
+  const directResults = []
+  const directSources = plannerSources
+    .filter((source) => source?.search_url_template && looksSwissDomain(hostnameFromUrl(source.base_url || source.search_url_template)))
+    .slice(0, 10)
+
+  for (const source of directSources) {
+    try {
+      const searchUrl = source.search_url_template.replace('{query}', encodeURIComponent(task.query || ''))
+      const html = await fetchText(searchUrl, searchTimeout)
+      directResults.push(...parseGenericAnchorResults(html, searchUrl, task.query, `direct_shop_search:${source.source_key}`))
+    } catch {}
+  }
+  return directResults
+}
+
 export async function runOpenWebDiscovery({
   task,
   controlMap,
+  plannerSources = [],
   inferIntent,
   clean,
   brandFromTitle,
@@ -231,24 +291,20 @@ export async function runOpenWebDiscovery({
   const openWeb = controlMap.get('open_web_discovery')
   if (openWeb?.is_enabled === false) return { discovered: 0, imported: 0, sourceKeys: [] }
 
-  const resultLimit = Number(openWeb?.control_value_json?.result_limit || 12)
-  const productFetchLimit = Number(openWeb?.control_value_json?.product_fetch_limit || 8)
+  const resultLimit = Number(openWeb?.control_value_json?.result_limit || 18)
+  const productFetchLimit = Number(openWeb?.control_value_json?.product_fetch_limit || 12)
   const searchTimeout = Number(openWeb?.control_value_json?.search_timeout_ms || 25000)
   const intentTags = inferIntent(task.query || '')
   const searchTerms = [
     `${task.query} site:.ch kaufen preis`,
     `${task.query} site:.ch shop`,
     `${task.query} site:.ch produkt`,
+    `${task.query} schweiz kaufen`,
   ]
 
-  const allResults = []
-  for (const term of searchTerms) {
-    try {
-      const html = await fetchText(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(term)}`, searchTimeout)
-      allResults.push(...parseDuckDuckGoResults(html, task.query))
-    } catch {}
-    if (allResults.length >= resultLimit) break
-  }
+  const engineResults = await collectEngineResults({ task, searchTimeout, searchTerms, fetchText })
+  const directShopResults = await collectDirectShopResults({ task, plannerSources, searchTimeout, fetchText })
+  const allResults = [...engineResults, ...directShopResults]
 
   const unique = []
   const seen = new Set()
@@ -265,7 +321,7 @@ export async function runOpenWebDiscovery({
 
   for (let i = 0; i < unique.length; i++) {
     const item = unique[i]
-    const shop = await registerDiscoveredShop(item.url, intentTags, 'open_web_search')
+    const shop = await registerDiscoveredShop(item.url, intentTags, item.source.startsWith('direct_shop_search') ? 'direct_shop_search' : 'open_web_search')
     if (shop?.source_key) sourceKeys.push(shop.source_key)
     await insertWebDiscoveryResult(task, item, i + 1, { search_source: item.source }, !!shop, false)
     discovered += 1
@@ -279,7 +335,7 @@ export async function runOpenWebDiscovery({
         parseProductFromShopHints(html, item.url, item.host, { clean, brandFromTitle, normalizePrice })
       const offer = buildOfferFromParsedProduct(parsed, item.url, item.host, task.query, { sanitizeSourceKey, brandFromTitle, canonicalModelKey })
       if (!offer) continue
-      await storeSourceOffers(task.id, { provider: sanitizeSourceKey(item.host) || item.host, source_kind: 'open_web_product', seed_value: task.query }, [offer], item.url, 'open_web_product')
+      await storeSourceOffers(task.id, { provider: sanitizeSourceKey(item.host) || item.host, source_kind: 'open_web_product', seed_value: task.query }, [offer], item.url, item.source.startsWith('direct_shop_search') ? 'direct_shop_search' : 'open_web_product')
       await insertWebDiscoveryResult(task, item, 0, { parsed }, true, true)
       imported += 1
       if (item.host) sourceKeys.push(sanitizeSourceKey(item.host) || item.host)
