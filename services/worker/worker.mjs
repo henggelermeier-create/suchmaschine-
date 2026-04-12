@@ -26,6 +26,73 @@ const BASELINE_SEEDS = [
   'staubsauger akku',
   'smartphone 256 gb',
 ]
+const AUTONOMOUS_TOP_PRODUCT_TERMS = [
+  'iphone 16',
+  'iphone 16 pro',
+  'iphone 16 pro max',
+  'iphone 15',
+  'samsung galaxy s25',
+  'samsung galaxy s25 ultra',
+  'samsung galaxy s24',
+  'google pixel 9',
+  'google pixel 9 pro',
+  'xiaomi 15',
+  'nothing phone',
+  'macbook air m4',
+  'macbook pro m4',
+  'lenovo thinkpad',
+  'asus zenbook',
+  'dell xps',
+  'gaming laptop rtx 4060',
+  'gaming laptop rtx 4070',
+  'gaming laptop rtx 4080',
+  'airpods pro',
+  'sony wh 1000xm6',
+  'bose quietcomfort ultra',
+  'bluetooth kopfhörer',
+  'dyson v15',
+  'dyson v12',
+  'roborock s8',
+  'ecovacs deebot',
+  'kaffeevollautomat delonghi',
+  'jura kaffeevollautomat',
+  'philips airfryer',
+  'oled tv 55 zoll',
+  'oled tv 65 zoll',
+  'lg oled evo',
+  'samsung oled tv',
+  'sony bravia oled',
+  'nintendo switch 2',
+  'playstation 5',
+  'xbox series x',
+  'meta quest 3',
+  'apple watch ultra',
+  'apple watch series 10',
+  'samsung galaxy watch',
+  'garmin fenix',
+  'dji mini 4 pro',
+  'gopro hero',
+  'sony alpha a7',
+  'canon eos r6',
+  'monitor 27 zoll',
+  'monitor 32 zoll',
+  'ssd 2tb',
+  'nvme ssd',
+  'wlan router wifi 7',
+]
+
+function uniqueStrings(values = []) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))]
+}
+
+function buildAutonomousInventorySeedUniverse() {
+  const suffixes = ['', ' schweiz', ' preisvergleich']
+  const out = []
+  for (const term of uniqueStrings(AUTONOMOUS_TOP_PRODUCT_TERMS)) {
+    for (const suffix of suffixes) out.push(`${term}${suffix}`.trim())
+  }
+  return uniqueStrings(out).filter((term) => term.length >= 3)
+}
 
 function normalizeSearchText(input = '') {
   return String(input || '')
@@ -285,25 +352,36 @@ async function createSearchTask(query, requestedBy = 'worker_autonomous', trigge
   return task
 }
 
-async function ensureSeedCandidate(query, seedSource = 'system', priority = 50, notes = null) {
+async function ensureSeedCandidate(query, seedSource = 'system', priority = 50, notes = null, reopenAfterHours = null) {
   const normalized = normalizeSearchText(query)
-  if (!normalized) return
-  await pool.query(
+  if (!normalized) return null
+  const result = await pool.query(
     `INSERT INTO ai_seed_candidates(query, normalized_query, seed_source, priority, status, notes, created_at, updated_at)
      VALUES ($1,$2,$3,$4,'pending',$5,NOW(),NOW())
      ON CONFLICT (normalized_query)
-     DO UPDATE SET priority = GREATEST(ai_seed_candidates.priority, EXCLUDED.priority), updated_at = NOW()`,
-    [query, normalized, seedSource, priority, notes]
-  ).catch(() => {})
+     DO UPDATE SET
+       priority = GREATEST(ai_seed_candidates.priority, EXCLUDED.priority),
+       updated_at = NOW(),
+       status = CASE
+         WHEN $6::int IS NOT NULL
+           AND ai_seed_candidates.status IN ('completed','failed')
+           AND COALESCE(ai_seed_candidates.last_run_at, ai_seed_candidates.updated_at, ai_seed_candidates.created_at) <= NOW() - (($6::text || ' hours')::interval)
+         THEN 'pending'
+         ELSE ai_seed_candidates.status
+       END
+     RETURNING id, normalized_query, status`,
+    [query, normalized, seedSource, priority, notes, reopenAfterHours]
+  ).catch(() => ({ rows: [] }))
+  return result.rows[0] || null
 }
 
-async function seedBaselineCandidates(limit = 12) {
+async function seedBaselineCandidates(limit = 12, reopenAfterHours = null) {
   for (const query of BASELINE_SEEDS.slice(0, limit)) {
-    await ensureSeedCandidate(query, 'baseline', 65, 'Baseline Schweizer Top-Produkte')
+    await ensureSeedCandidate(query, 'baseline', 65, 'Baseline Schweizer Top-Produkte', reopenAfterHours)
   }
 }
 
-async function seedTrendingCandidates(limit = 20) {
+async function seedTrendingCandidates(limit = 20, reopenAfterHours = null) {
   const results = await pool.query(
     `SELECT query, COUNT(*)::int AS searches
      FROM search_logs
@@ -314,7 +392,7 @@ async function seedTrendingCandidates(limit = 20) {
     [limit]
   ).catch(() => ({ rows: [] }))
   for (const row of results.rows) {
-    await ensureSeedCandidate(row.query, 'trending_search_log', 50 + Math.min(30, Number(row.searches || 0)), 'Aus Suchlogs gelernt')
+    await ensureSeedCandidate(row.query, 'trending_search_log', 50 + Math.min(30, Number(row.searches || 0)), 'Aus Suchlogs gelernt', reopenAfterHours)
   }
   const canonical = await pool.query(
     `SELECT title, popularity_score
@@ -325,8 +403,75 @@ async function seedTrendingCandidates(limit = 20) {
     [Math.max(5, Math.floor(limit / 2))]
   ).catch(() => ({ rows: [] }))
   for (const row of canonical.rows) {
-    await ensureSeedCandidate(row.title, 'popular_canonical', 45 + Math.min(20, Number(row.popularity_score || 0)), 'Aus Canonical-Popularität gelernt')
+    await ensureSeedCandidate(row.title, 'popular_canonical', 45 + Math.min(20, Number(row.popularity_score || 0)), 'Aus Canonical-Popularität gelernt', reopenAfterHours)
   }
+}
+
+async function countCanonicalProducts() {
+  const result = await pool.query(`SELECT COUNT(*)::int AS c FROM canonical_products`).catch(() => ({ rows: [] }))
+  return Number(result.rows[0]?.c || 0)
+}
+
+async function countSeedCandidatesByStatuses(statuses = ['pending', 'running']) {
+  const result = await pool.query(
+    `SELECT COUNT(*)::int AS c FROM ai_seed_candidates WHERE status = ANY($1::text[])`,
+    [statuses]
+  ).catch(() => ({ rows: [] }))
+  return Number(result.rows[0]?.c || 0)
+}
+
+async function loadSuccessfulSeedQueries(limit = 120) {
+  const result = await pool.query(
+    `SELECT raw_query
+     FROM ai_query_memory
+     WHERE raw_query IS NOT NULL AND success_count > 0
+     ORDER BY success_count DESC, last_success_at DESC NULLS LAST, updated_at DESC
+     LIMIT $1`,
+    [limit]
+  ).catch(() => ({ rows: [] }))
+  return uniqueStrings(result.rows.map((row) => row.raw_query))
+}
+
+async function loadPopularCanonicalTitles(limit = 180) {
+  const result = await pool.query(
+    `SELECT title
+     FROM canonical_products
+     WHERE title IS NOT NULL
+     ORDER BY popularity_score DESC NULLS LAST, updated_at DESC
+     LIMIT $1`,
+    [limit]
+  ).catch(() => ({ rows: [] }))
+  return uniqueStrings(result.rows.map((row) => row.title))
+}
+
+async function seedInventoryCandidates({ targetCanonicalProducts = 10000, seedBatchSize = 250, maxPendingCandidates = 2000, reopenAfterHours = 24 } = {}) {
+  const canonicalCount = await countCanonicalProducts()
+  const gap = Math.max(0, targetCanonicalProducts - canonicalCount)
+  if (gap <= 0) return { canonicalCount, gap, attempted: 0 }
+
+  const pendingCount = await countSeedCandidatesByStatuses(['pending', 'running'])
+  const remainingPendingBudget = Math.max(0, maxPendingCandidates - pendingCount)
+  const budget = Math.min(seedBatchSize, Math.max(gap, 0), remainingPendingBudget)
+  if (budget <= 0) return { canonicalCount, gap, attempted: 0 }
+
+  const [successfulQueries, canonicalTitles] = await Promise.all([
+    loadSuccessfulSeedQueries(Math.max(60, Math.floor(seedBatchSize / 2))),
+    loadPopularCanonicalTitles(Math.max(80, Math.floor(seedBatchSize))),
+  ])
+
+  const universe = uniqueStrings([
+    ...successfulQueries,
+    ...canonicalTitles,
+    ...buildAutonomousInventorySeedUniverse(),
+  ])
+
+  let attempted = 0
+  for (const query of universe) {
+    if (attempted >= budget) break
+    await ensureSeedCandidate(query, 'inventory_target', 70, 'Autonomes Inventar-Ziel', reopenAfterHours)
+    attempted += 1
+  }
+  return { canonicalCount, gap, attempted }
 }
 
 async function claimSeedCandidate() {
@@ -349,7 +494,7 @@ async function processAutonomousSeedCandidate(seed) {
   const task = await createSearchTask(seed.query, 'worker_autonomous', 'autonomous_seed')
   await pool.query(
     `UPDATE ai_seed_candidates
-     SET status = 'completed', last_enqueued_task_id = $2, updated_at = NOW()
+     SET status = CASE WHEN $2 IS NULL THEN 'failed' ELSE 'completed' END, last_enqueued_task_id = $2, updated_at = NOW()
      WHERE id = $1`,
     [seed.id, task?.id || null]
   ).catch(() => {})
@@ -359,11 +504,18 @@ async function tickAutonomousBuilder(controlMap) {
   if (!engineIsRunning(controlMap)) return
   const autonomous = controlMap.get('autonomous_builder')
   if (autonomous?.is_enabled === false) return
-  const baselineLimit = Number(autonomous?.control_value_json?.baseline_limit || 12)
-  const trendingLimit = Number(autonomous?.control_value_json?.trending_limit || 20)
-  const enqueuePerTick = Number(autonomous?.control_value_json?.enqueue_per_tick || 1)
-  await seedBaselineCandidates(baselineLimit)
-  await seedTrendingCandidates(trendingLimit)
+  const baselineLimit = Number(autonomous?.control_value_json?.baseline_limit || 20)
+  const trendingLimit = Number(autonomous?.control_value_json?.trending_limit || 40)
+  const enqueuePerTick = Number(autonomous?.control_value_json?.enqueue_per_tick || 3)
+  const targetCanonicalProducts = Number(autonomous?.control_value_json?.target_canonical_products || 10000)
+  const seedBatchSize = Number(autonomous?.control_value_json?.seed_batch_size || 250)
+  const recycleCompletedAfterHours = Number(autonomous?.control_value_json?.recycle_completed_after_hours || 24)
+  const maxPendingCandidates = Number(autonomous?.control_value_json?.max_pending_candidates || 2000)
+  const currentCanonicalCount = await countCanonicalProducts()
+  if (currentCanonicalCount >= targetCanonicalProducts) return
+  await seedBaselineCandidates(baselineLimit, recycleCompletedAfterHours)
+  await seedTrendingCandidates(trendingLimit, recycleCompletedAfterHours)
+  await seedInventoryCandidates({ targetCanonicalProducts, seedBatchSize, maxPendingCandidates, reopenAfterHours: recycleCompletedAfterHours })
   for (let i = 0; i < enqueuePerTick; i++) {
     const seed = await claimSeedCandidate()
     if (!seed) break
@@ -738,6 +890,7 @@ async function processSearchTask(task, controlMap) {
     insertWebDiscoveryResult,
     storeSourceOffers: (taskId, source, offers, pageUrl, discoverySourceKey) => storeSourceOffers(taskId, source, offers, pageUrl, discoverySourceKey, null),
     fetchText,
+    logImportDiagnostic,
   }).catch(() => ({ discovered: 0, imported: 0, sourceKeys: [] }))
   discovered += openWebResult.discovered
   imported += openWebResult.imported
