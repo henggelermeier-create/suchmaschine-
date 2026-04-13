@@ -85,6 +85,23 @@ function uniqueStrings(values = []) {
   return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))]
 }
 
+function workerLog(event, payload = {}) {
+  try {
+    console.log(`[worker][${event}]`, JSON.stringify(payload))
+  } catch {
+    console.log(`[worker][${event}]`, payload)
+  }
+}
+
+function workerError(event, error, payload = {}) {
+  const message = String(error?.message || error || 'Unknown error')
+  try {
+    console.error(`[worker][${event}]`, JSON.stringify({ ...payload, error: message }))
+  } catch {
+    console.error(`[worker][${event}]`, message)
+  }
+}
+
 function buildAutonomousInventorySeedUniverse() {
   const suffixes = ['', ' schweiz', ' preisvergleich']
   const out = []
@@ -319,7 +336,10 @@ async function createSearchTask(query, requestedBy = 'worker_autonomous', trigge
      LIMIT 1`,
     [normalized]
   ).catch(() => ({ rows: [] }))
-  if (existing.rows?.length) return existing.rows[0]
+  if (existing.rows?.length) {
+    workerLog('task_reused', { query, taskId: existing.rows[0].id, status: existing.rows[0].status })
+    return existing.rows[0]
+  }
 
   const inserted = await pool.query(
     `INSERT INTO search_tasks(query, normalized_query, trigger_type, status, strategy, user_visible_note, task_priority, source_budget, requested_by)
@@ -349,6 +369,7 @@ async function createSearchTask(query, requestedBy = 'worker_autonomous', trigge
     ).catch(() => {})
   }
   await logImportDiagnostic({ searchTaskId: task.id, stage: 'task_created', status: 'success', message: 'Search task created', payload: { query } })
+  workerLog('task_created', { query, taskId: task.id, triggerType, plannedSources: finalSelection.map((item) => item.source.source_key) })
   return task
 }
 
@@ -498,6 +519,7 @@ async function processAutonomousSeedCandidate(seed) {
      WHERE id = $1`,
     [seed.id, task?.id || null]
   ).catch(() => {})
+  workerLog('autonomous_seed_processed', { seedId: seed.id, query: seed.query, taskId: task?.id || null, result: task ? 'enqueued' : 'failed' })
 }
 
 async function tickAutonomousBuilder(controlMap) {
@@ -512,13 +534,21 @@ async function tickAutonomousBuilder(controlMap) {
   const recycleCompletedAfterHours = Number(autonomous?.control_value_json?.recycle_completed_after_hours || 24)
   const maxPendingCandidates = Number(autonomous?.control_value_json?.max_pending_candidates || 2000)
   const currentCanonicalCount = await countCanonicalProducts()
-  if (currentCanonicalCount >= targetCanonicalProducts) return
+  workerLog('autonomous_tick', { currentCanonicalCount, targetCanonicalProducts, enqueuePerTick, seedBatchSize })
+  if (currentCanonicalCount >= targetCanonicalProducts) {
+    workerLog('autonomous_target_reached', { currentCanonicalCount, targetCanonicalProducts })
+    return
+  }
   await seedBaselineCandidates(baselineLimit, recycleCompletedAfterHours)
   await seedTrendingCandidates(trendingLimit, recycleCompletedAfterHours)
-  await seedInventoryCandidates({ targetCanonicalProducts, seedBatchSize, maxPendingCandidates, reopenAfterHours: recycleCompletedAfterHours })
+  const inventorySeedResult = await seedInventoryCandidates({ targetCanonicalProducts, seedBatchSize, maxPendingCandidates, reopenAfterHours: recycleCompletedAfterHours })
+  workerLog('autonomous_seed_inventory', inventorySeedResult)
   for (let i = 0; i < enqueuePerTick; i++) {
     const seed = await claimSeedCandidate()
-    if (!seed) break
+    if (!seed) {
+      workerLog('autonomous_no_pending_seed', { index: i })
+      break
+    }
     await processAutonomousSeedCandidate(seed)
   }
 }
@@ -683,12 +713,14 @@ async function insertWebDiscoveryResult(task, result, rank, extractedJson = {}, 
 async function storeSourceOffers(taskId, source, offers, pageUrl, discoverySourceKey = 'task_source', taskSourceId = null) {
   if (!Array.isArray(offers) || !offers.length) {
     await logImportDiagnostic({ searchTaskId: taskId, searchTaskSourceId: taskSourceId, stage: 'offer_batch', status: 'warning', message: 'No offers available to insert', payload: { provider: source.provider, pageUrl } })
+    workerLog('offer_batch_empty', { taskId, provider: source.provider, pageUrl })
     return 0
   }
 
   const sourcePageId = await ensureSourcePage(source.provider, pageUrl, source.source_kind, 'search_results', { query: source.seed_value, provider: source.provider })
   if (!sourcePageId) {
     await logImportDiagnostic({ searchTaskId: taskId, searchTaskSourceId: taskSourceId, stage: 'source_page', status: 'error', message: 'Source page could not be created', payload: { provider: source.provider, pageUrl } })
+    workerError('source_page_failed', null, { taskId, provider: source.provider, pageUrl })
     return 0
   }
 
@@ -718,6 +750,7 @@ async function storeSourceOffers(taskId, source, offers, pageUrl, discoverySourc
         message: String(err.message || err),
         payload: { provider: source.provider, offer_title: offer.offer_title, pageUrl, price: offer.price, currency: offer.currency }
       })
+      workerError('offer_insert_failed', err, { taskId, provider: source.provider, offerTitle: offer.offer_title })
     }
   }
 
@@ -729,17 +762,20 @@ async function storeSourceOffers(taskId, source, offers, pageUrl, discoverySourc
     message: `Inserted ${inserted}/${offers.length} offers`,
     payload: { provider: source.provider, pageUrl, inserted, failed }
   })
+  workerLog('offer_batch_result', { taskId, provider: source.provider, pageUrl, inserted, failed, total: offers.length })
 
   return inserted
 }
 
 async function processTaskSource(task, source) {
   const swissSource = await loadSwissSource(source.swiss_source_id)
+  workerLog('task_source_start', { taskId: task.id, query: task.query, provider: source.provider, sourceKind: source.source_kind })
   if (source.provider === 'toppreise' && source.source_kind === 'comparison_search') {
     const url = `${TOPPREISE_BASE}${encodeURIComponent(task.query || source.seed_value)}`
     const html = await fetchText(url)
     const offers = parseToppreiseResults(html, task.query || source.seed_value, url)
     await logImportDiagnostic({ searchTaskId: task.id, searchTaskSourceId: source.id, stage: 'toppreise_parse', status: offers.length ? 'success' : 'warning', message: `Parsed ${offers.length} offers from Toppreise`, payload: { url, query: task.query || source.seed_value } })
+    workerLog('toppreise_parsed', { taskId: task.id, query: task.query, offers: offers.length })
     if (!offers.length) {
       await pool.query(`UPDATE search_task_sources SET status = 'failed', discovered_count = 0, imported_count = 0, updated_at = NOW(), error_message = 'Toppreise lieferte keine parsebaren Offers.' WHERE id = $1`, [source.id]).catch(() => {})
       return { discovered: 0, imported: 0, sourceKey: source.provider }
@@ -766,6 +802,7 @@ async function processTaskSource(task, source) {
     if (sourcePageId) discovered += 1
   }
   await logImportDiagnostic({ searchTaskId: task.id, searchTaskSourceId: source.id, stage: 'source_seed', status: discovered > 0 ? 'success' : 'warning', message: `Prepared ${discovered} source pages`, payload: { provider: source.provider, urls } })
+  workerLog('task_source_seeded', { taskId: task.id, provider: source.provider, discovered, urls: urls.length })
   await pool.query(`UPDATE search_task_sources SET status = 'success', discovered_count = $2, imported_count = 0, updated_at = NOW(), error_message = NULL WHERE id = $1`, [source.id, discovered]).catch(() => {})
   return { discovered, imported: 0, sourceKey: swissSource?.source_key || source.provider }
 }
@@ -818,6 +855,7 @@ async function ensureCanonicalFromOffers(limit = 250, taskId = null) {
     merged += 1
   }
   await logImportDiagnostic({ searchTaskId: taskId, stage: 'canonical_merge', status: merged > 0 ? 'success' : 'warning', message: `Merged ${merged} offers into canonicals`, payload: { limit, merged } })
+  workerLog('canonical_merge_result', { taskId, merged, inspectedOffers: offers.rows.length })
   return merged
 }
 
@@ -875,6 +913,7 @@ async function processSearchTask(task, controlMap) {
   let imported = 0
   const successfulSourceKeys = []
   const plannerSources = await loadPlannerSources().catch(() => [])
+  workerLog('task_start', { taskId: task.id, query: task.query, strategy: task.strategy })
 
   const openWebResult = await runOpenWebDiscovery({
     task,
@@ -891,11 +930,15 @@ async function processSearchTask(task, controlMap) {
     storeSourceOffers: (taskId, source, offers, pageUrl, discoverySourceKey) => storeSourceOffers(taskId, source, offers, pageUrl, discoverySourceKey, null),
     fetchText,
     logImportDiagnostic,
-  }).catch(() => ({ discovered: 0, imported: 0, sourceKeys: [] }))
+  }).catch((err) => {
+    workerError('open_web_discovery_failed', err, { taskId: task.id, query: task.query })
+    return { discovered: 0, imported: 0, sourceKeys: [] }
+  })
   discovered += openWebResult.discovered
   imported += openWebResult.imported
   successfulSourceKeys.push(...openWebResult.sourceKeys)
   await logImportDiagnostic({ searchTaskId: task.id, stage: 'open_web_discovery', status: openWebResult.imported > 0 ? 'success' : 'warning', message: `Open web discovered ${openWebResult.discovered} and imported ${openWebResult.imported}`, payload: openWebResult })
+  workerLog('open_web_result', { taskId: task.id, discovered: openWebResult.discovered, imported: openWebResult.imported, sourceKeys: openWebResult.sourceKeys?.length || 0 })
 
   while (true) {
     const source = await claimTaskSource(task.id)
@@ -908,6 +951,7 @@ async function processSearchTask(task, controlMap) {
     } catch (err) {
       await pool.query(`UPDATE search_task_sources SET status = 'failed', updated_at = NOW(), error_message = $2 WHERE id = $1`, [source.id, String(err.message || err)]).catch(() => {})
       await logImportDiagnostic({ searchTaskId: task.id, searchTaskSourceId: source.id, stage: 'task_source', status: 'error', message: String(err.message || err), payload: { provider: source.provider, source_kind: source.source_kind } })
+      workerError('task_source_failed', err, { taskId: task.id, provider: source.provider, sourceKind: source.source_kind })
     }
   }
 
@@ -918,25 +962,30 @@ async function processSearchTask(task, controlMap) {
   await pool.query(`UPDATE search_tasks SET status = $2, finished_at = NOW(), updated_at = NOW(), discovered_count = COALESCE(discovered_count,0) + $3, imported_count = COALESCE(imported_count,0) + $4, result_count = COALESCE(result_count,0) + $4, error_message = CASE WHEN $2 = 'failed' THEN 'Treffer wurden gefunden, aber es konnten keine stabilen Offers gespeichert oder gemerged werden.' ELSE NULL END WHERE id = $1`, [task.id, status, discovered, finalImported]).catch(() => {})
   await logImportDiagnostic({ searchTaskId: task.id, stage: 'task_summary', status: status === 'success' ? 'success' : 'error', message: `Task finished with discovered=${discovered}, imported=${imported}, merged=${merged}`, payload: { discovered, imported, merged, finalImported, successfulSourceKeys: [...new Set(successfulSourceKeys)] } })
   await rememberQueryLearning(task, successfulSourceKeys, finalImported, status)
+  workerLog('task_summary', { taskId: task.id, query: task.query, status, discovered, imported, merged, finalImported })
 }
 
 async function tickAiSearch(controlMap) {
   if (!engineIsRunning(controlMap)) return
   const task = await claimSearchTask()
-  if (!task) return
+  if (!task) {
+    workerLog('task_queue_empty', {})
+    return
+  }
   try {
     await processSearchTask(task, controlMap)
   } catch (err) {
     await pool.query(`UPDATE search_tasks SET status = 'failed', finished_at = NOW(), updated_at = NOW(), error_message = $2 WHERE id = $1`, [task.id, String(err.message || err)]).catch(() => {})
     await logImportDiagnostic({ searchTaskId: task.id, stage: 'task_fatal', status: 'error', message: String(err.message || err), payload: { query: task.query } })
+    workerError('task_fatal', err, { taskId: task.id, query: task.query })
   }
 }
 
 await ensureCoreSchema(pool)
 await cycle()
 let initialControls = await loadRuntimeControls().catch(() => new Map())
-await tickAutonomousBuilder(initialControls).catch(console.error)
-await tickAiSearch(initialControls).catch(console.error)
+await tickAutonomousBuilder(initialControls).catch((err) => workerError('autonomous_tick_initial_failed', err))
+await tickAiSearch(initialControls).catch((err) => workerError('ai_tick_initial_failed', err))
 setInterval(cycle, interval * 1000)
-setInterval(async () => { const controls = await loadRuntimeControls().catch(() => new Map()); await tickAutonomousBuilder(controls).catch(console.error) }, Math.max(30, AI_SEARCH_INTERVAL_SECONDS) * 1000)
-setInterval(async () => { const controls = await loadRuntimeControls().catch(() => new Map()); await tickAiSearch(controls).catch(console.error) }, AI_SEARCH_INTERVAL_SECONDS * 1000)
+setInterval(async () => { const controls = await loadRuntimeControls().catch(() => new Map()); await tickAutonomousBuilder(controls).catch((err) => workerError('autonomous_tick_failed', err)) }, Math.max(30, AI_SEARCH_INTERVAL_SECONDS) * 1000)
+setInterval(async () => { const controls = await loadRuntimeControls().catch(() => new Map()); await tickAiSearch(controls).catch((err) => workerError('ai_tick_failed', err)) }, AI_SEARCH_INTERVAL_SECONDS * 1000)
