@@ -1,27 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Search, Sparkles } from 'lucide-react'
+import { Search, ArrowRight } from 'lucide-react'
 
 const formatPrice = (value) => value != null ? `CHF ${Number(value).toFixed(2)}` : '—'
 
 async function fetchSuggestions(query) {
   const q = String(query || '').trim()
   if (q.length < 2) return []
-
-  async function request(url) {
-    const res = await fetch(url)
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(data.error || 'Fehler')
-    return data.items || []
-  }
-
-  try {
-    return (await request(`/api/products/suggest?q=${encodeURIComponent(q)}`)).slice(0, 8)
-  } catch {
-    return (await request(`/api/products?q=${encodeURIComponent(q)}`)).slice(0, 8)
-  }
+  const res = await fetch(`/api/products/suggest?q=${encodeURIComponent(q)}`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || 'Fehler')
+  return data.items || []
 }
 
-export default function SearchSuggestBox({ query, setQuery, href = '#/search', placeholder }) {
+export default function SearchSuggestBox({ query, setQuery, onSubmit, placeholder }) {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
@@ -61,50 +52,37 @@ export default function SearchSuggestBox({ query, setQuery, href = '#/search', p
     window.location.hash = `/product/${item.slug}`
   }
 
-  const showDropdown = open && (loading || items.length > 0 || String(query || '').trim().length >= 2)
-
   return (
-    <div ref={rootRef} className="search-suggest-root">
-      <div className="brand-search-shell">
-        <div className="brand-search-inputwrap">
-          <Search className="brand-search-icon" />
+    <div ref={rootRef} className="searchbox-root">
+      <div className="searchbox-shell">
+        <div className="searchbox-input-wrap">
+          <Search className="searchbox-icon" />
           <input
             value={query}
             onFocus={() => { if (items.length) setOpen(true) }}
-            onChange={e => setQuery(e.target.value)}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onSubmit?.(query)
+            }}
             placeholder={placeholder}
-            className="brand-search-input"
           />
         </div>
-        <a className="brand-primary-button" href={href}>
-          Preise vergleichen
-        </a>
+        <button className="btn btn-primary" onClick={() => onSubmit?.(query)}>Suche starten</button>
       </div>
 
-      {showDropdown ? (
-        <div className="brand-suggest-dropdown">
-          {loading ? <div className="brand-suggest-state">Vorschläge werden geladen…</div> : null}
-          {!loading && items.length === 0 ? <div className="brand-suggest-state">Keine Vorschläge gefunden.</div> : null}
+      {open && (loading || items.length > 0 || String(query || '').trim().length >= 2) ? (
+        <div className="suggest-dropdown">
+          {loading ? <div className="suggest-empty">Vorschläge werden geladen…</div> : null}
+          {!loading && items.length === 0 ? <div className="suggest-empty">Keine Vorschläge gefunden.</div> : null}
           {!loading && items.map((item, index) => (
-            <button
-              key={item.slug}
-              type="button"
-              onClick={() => selectItem(item)}
-              className={`brand-suggest-item ${index === 0 ? 'brand-suggest-item--first' : ''}`}
-            >
-              <div className="brand-suggest-copy">
-                <div className="brand-suggest-title">{item.title}</div>
-                <div className="brand-suggest-meta">
-                  <span>{item.brand || '—'}</span>
-                  <span>·</span>
-                  <span>{item.shop_name || 'Shop'}</span>
-                  <span>·</span>
-                  <span>{item.offer_count} Anbieter</span>
-                </div>
+            <button key={item.slug || index} type="button" className="suggest-item" onClick={() => selectItem(item)}>
+              <div>
+                <div className="suggest-title">{item.title}</div>
+                <div className="suggest-meta">{item.brand || '—'} · {item.shop_name || 'KI Index'} · {item.offer_count || 0} Shops</div>
               </div>
-              <div className="brand-suggest-side">
-                <div className="brand-suggest-price">{formatPrice(item.price)}</div>
-                <div className="brand-suggest-pill"><Sparkles size={13} /> {item.decision?.label || 'Vorschlag'}</div>
+              <div className="suggest-side">
+                <div className="suggest-price">{formatPrice(item.price)}</div>
+                <div className="suggest-open"><ArrowRight size={14} /></div>
               </div>
             </button>
           ))}

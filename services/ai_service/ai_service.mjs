@@ -1,19 +1,32 @@
 import express from 'express'
 
 const app = express()
-app.use(express.json({ limit: '2mb' }))
+app.use(express.json({ limit: '3mb' }))
 
 const PORT = Number(process.env.PORT || 3010)
-const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || '').trim()
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
 const AI_MODEL = process.env.AI_MODEL || 'gpt-4o-mini'
-const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 35000)
 
-function cleanText(value = '') {
+function clean(value = '') {
   return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
+function decodeHtml(str = '') {
+  return String(str || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+}
+
+function hostnameFromUrl(url = '') {
+  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, '') } catch { return '' }
+}
+
 function normalizePrice(raw) {
-  if (raw == null || raw === '') return null
+  if (raw == null) return null
   const cleaned = String(raw)
     .replace(/CHF/gi, '')
     .replace(/inkl\..*$/i, '')
@@ -27,284 +40,334 @@ function normalizePrice(raw) {
   return Number.isFinite(value) ? value : null
 }
 
-function clampText(value = '', max = 240) {
-  const text = cleanText(value)
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text
+function brandFromTitle(title = '') {
+  return clean(title).split(/\s+/)[0] || null
 }
 
-function compactHtml(html = '') {
-  const raw = String(html || '')
-  return raw
-    .replace(/<script\b(?!(?=[^>]*application\/ld\+json))[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+function normalizeSearchText(input = '') {
+  return String(input || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
-    .slice(0, 40000)
+    .trim()
 }
 
-function cleanUrl(url = '') {
-  const value = String(url || '').trim()
-  return /^https?:\/\//i.test(value) ? value : null
+function canonicalModelKey({ brand = '', title = '', specs = '' } = {}) {
+  return normalizeSearchText(`${brand} ${title} ${specs}`)
+    .replace(/\b(5g|lte|wifi|bluetooth|dual sim|esim|smartphone|notebook|headphones|kopfhorer|kopfhörer|black|white|blue|green|gray|grey|silver|gold)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
-function normalizeExtractedOffer(result = {}, fallback = {}) {
-  const price = normalizePrice(result.price)
-  const confidence = Number(result.confidence_score)
-  return {
-    title: clampText(result.title || fallback.title || '', 180),
-    brand: clampText(result.brand || '', 80) || null,
-    category: clampText(result.category || '', 80) || null,
-    price,
-    currency: cleanText(result.currency || fallback.currency || 'CHF') || 'CHF',
-    availability: clampText(result.availability || '', 80) || null,
-    image_url: cleanUrl(result.image_url),
-    mpn: clampText(result.mpn || '', 80) || null,
-    ean_gtin: clampText(result.ean_gtin || '', 80) || null,
-    summary: clampText(result.summary || '', 240) || null,
-    confidence_score: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.68,
+function getMeta(html = '', selectors = []) {
+  for (const selector of selectors) {
+    const regex = new RegExp(`<meta[^>]+(?:property|name)=["']${selector}["'][^>]+content=["']([^"']+)["']`, 'i')
+    const match = html.match(regex)
+    if (match?.[1]) return decodeHtml(match[1])
   }
+  return null
 }
 
-function normalizeMatchResult(result = {}, candidates = []) {
-  const candidateIds = new Set(candidates.map((item) => String(item.id)))
-  const pickedId = result.canonical_id != null ? String(result.canonical_id) : null
-  const confidence = Number(result.confidence_score)
-  return {
-    canonical_id: pickedId && candidateIds.has(pickedId) ? pickedId : null,
-    reason: clampText(result.reason || '', 220) || null,
-    alias_text: clampText(result.alias_text || '', 120) || null,
-    confidence_score: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.55,
-  }
+function getTitleTag(html = '') {
+  const match = html.match(/<title[^>]*>([^<]+)<\/title>/i)
+  return match?.[1] ? decodeHtml(match[1]) : null
 }
 
-function normalizeRankResult(result = {}, items = []) {
-  const allowed = new Set(items.map((item) => String(item.id)))
-  const ids = Array.isArray(result.ranked_ids) ? result.ranked_ids.map((id) => String(id)).filter((id) => allowed.has(id)) : []
-  return {
-    ranked_ids: [...new Set(ids)],
-    summary: clampText(result.summary || '', 220) || null,
-  }
+function safeJsonParse(value) {
+  try { return JSON.parse(value) } catch { return null }
 }
 
-function normalizePlanResult(result = {}) {
-  const phrases = Array.isArray(result.search_terms) ? result.search_terms.map((term) => cleanText(term)).filter(Boolean) : []
-  return {
-    search_terms: [...new Set(phrases)].slice(0, 10),
-    notes: clampText(result.notes || '', 220) || null,
-  }
+function flattenJsonLd(node) {
+  if (!node) return []
+  if (Array.isArray(node)) return node.flatMap(flattenJsonLd)
+  if (Array.isArray(node['@graph'])) return flattenJsonLd(node['@graph'])
+  return [node]
 }
 
-async function callOpenAIJson({ system, user, temperature = 0.1 }) {
-  if (!OPENAI_API_KEY) {
-    const err = new Error('OPENAI_API_KEY fehlt')
-    err.status = 503
-    throw err
+function extractJsonLdCandidates(html = '') {
+  const matches = [...String(html).matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)]
+  const out = []
+  for (const match of matches) {
+    const parsed = safeJsonParse(match[1])
+    if (!parsed) continue
+    out.push(...flattenJsonLd(parsed))
   }
+  return out
+}
 
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS)
+function extractVisibleText(html = '') {
+  return String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
 
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: AI_MODEL,
-        temperature,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-      }),
-    })
-
-    const payload = await response.json().catch(() => ({}))
-    if (!response.ok) {
-      const message = payload?.error?.message || `OpenAI HTTP ${response.status}`
-      const err = new Error(message)
-      err.status = response.status
-      throw err
+function parseProductFromJsonLd(html = '', pageUrl = '') {
+  const blocks = extractJsonLdCandidates(html)
+  for (const block of blocks) {
+    const typeValue = Array.isArray(block['@type']) ? block['@type'].join(' ') : String(block['@type'] || '')
+    if (!/Product/i.test(typeValue)) continue
+    const offerNode = Array.isArray(block.offers) ? block.offers[0] : block.offers || {}
+    const imageNode = Array.isArray(block.image) ? block.image[0] : block.image
+    const brandNode = typeof block.brand === 'object' ? block.brand?.name : block.brand
+    const price = normalizePrice(offerNode?.price || offerNode?.priceSpecification?.price)
+    return {
+      title: clean(block.name || getTitleTag(html) || ''),
+      brand: clean(brandNode || brandFromTitle(block.name || '')),
+      image_url: typeof imageNode === 'string' ? imageNode : null,
+      price,
+      currency: offerNode?.priceCurrency || 'CHF',
+      availability: clean(offerNode?.availability || ''),
+      mpn: clean(block.mpn || ''),
+      ean_gtin: clean(block.gtin13 || block.gtin || ''),
+      extraction_method: 'json_ld_product',
+      confidence_score: price ? 0.94 : 0.82,
+      source_product_url: pageUrl,
+      deeplink_url: pageUrl,
     }
-
-    const content = payload?.choices?.[0]?.message?.content
-    if (!content) throw new Error('Leere OpenAI-Antwort')
-    return JSON.parse(content)
-  } finally {
-    clearTimeout(timeout)
   }
+  return null
+}
+
+function parseProductFromMeta(html = '', pageUrl = '') {
+  const title = getMeta(html, ['og:title', 'twitter:title']) || getTitleTag(html)
+  const image = getMeta(html, ['og:image', 'twitter:image'])
+  const priceRaw = getMeta(html, ['product:price:amount', 'og:price:amount']) || (html.match(/CHF\s?[0-9'.,]+/i)?.[0] || null)
+  const price = normalizePrice(priceRaw)
+  if (!title && !price) return null
+  return {
+    title: clean(title || ''),
+    brand: brandFromTitle(title || ''),
+    image_url: image || null,
+    price,
+    currency: 'CHF',
+    availability: null,
+    mpn: null,
+    ean_gtin: null,
+    extraction_method: 'meta_fallback',
+    confidence_score: price && image ? 0.74 : 0.62,
+    source_product_url: pageUrl,
+    deeplink_url: pageUrl,
+  }
+}
+
+function parseProductFromVisibleText(html = '', pageUrl = '') {
+  const visible = extractVisibleText(html)
+  const title = clean(getTitleTag(html) || visible.slice(0, 140))
+  const price = normalizePrice(visible.match(/CHF\s?[0-9'.,]{2,20}/i)?.[0] || null)
+  if (!title || !price) return null
+  return {
+    title,
+    brand: brandFromTitle(title),
+    image_url: getMeta(html, ['og:image']) || null,
+    price,
+    currency: 'CHF',
+    availability: null,
+    mpn: null,
+    ean_gtin: null,
+    extraction_method: 'visible_text_fallback',
+    confidence_score: 0.56,
+    source_product_url: pageUrl,
+    deeplink_url: pageUrl,
+  }
+}
+
+async function callOpenAIJson({ schemaName, schema, instructions, payload }) {
+  if (!OPENAI_API_KEY) return null
+  const res = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: AI_MODEL,
+      input: [
+        { role: 'system', content: instructions },
+        { role: 'user', content: `Return strict JSON only. Payload JSON:\n${JSON.stringify(payload)}` },
+      ],
+      text: {
+        format: {
+          type: 'json_schema',
+          name: schemaName,
+          strict: true,
+          schema,
+        },
+      },
+    }),
+  })
+  if (!res.ok) throw new Error(`OpenAI HTTP ${res.status}`)
+  const data = await res.json()
+  const maybe = data.output_text
+    || data.output?.flatMap((item) => item.content || []).find((part) => part.text)?.text
+    || data.output?.[0]?.content?.[0]?.text
+  if (!maybe) return null
+  return JSON.parse(maybe)
+}
+
+function finalizeProduct(raw = {}, pageUrl = '') {
+  const title = clean(raw.title || '')
+  const brand = clean(raw.brand || brandFromTitle(title) || '') || null
+  const price = normalizePrice(raw.price)
+  return {
+    title,
+    brand,
+    category: clean(raw.category || '') || null,
+    image_url: raw.image_url || null,
+    price,
+    currency: clean(raw.currency || 'CHF') || 'CHF',
+    availability: clean(raw.availability || '') || null,
+    mpn: clean(raw.mpn || '') || null,
+    ean_gtin: clean(raw.ean_gtin || '') || null,
+    extraction_method: raw.extraction_method || 'ai_extract',
+    confidence_score: Number(raw.confidence_score || 0.7),
+    source_product_url: raw.source_product_url || pageUrl || null,
+    deeplink_url: raw.deeplink_url || pageUrl || null,
+    model_key: canonicalModelKey({ brand, title, specs: [raw.mpn, raw.ean_gtin].filter(Boolean).join(' ') }),
+  }
+}
+
+async function extractProduct({ html = '', url = '', query = '', source = '' }) {
+  const heuristic = parseProductFromJsonLd(html, url) || parseProductFromMeta(html, url) || parseProductFromVisibleText(html, url)
+  const visible = extractVisibleText(html).slice(0, 12000)
+
+  const payload = {
+    url,
+    host: hostnameFromUrl(url),
+    query,
+    source,
+    heuristic,
+    html_excerpt: html.slice(0, 16000),
+    visible_text_excerpt: visible,
+  }
+
+  const ai = await callOpenAIJson({
+    schemaName: 'product_extract',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['title', 'brand', 'price', 'currency', 'availability', 'image_url', 'mpn', 'ean_gtin', 'category', 'confidence_score'],
+      properties: {
+        title: { type: 'string' },
+        brand: { type: 'string' },
+        price: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+        currency: { type: 'string' },
+        availability: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        image_url: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        mpn: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        ean_gtin: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        category: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        confidence_score: { type: 'number' },
+      },
+    },
+    instructions: 'You extract ecommerce product pages into strict JSON. Prefer the heuristic values when they look valid. Infer only from provided content. Return JSON.',
+    payload,
+  }).catch(() => null)
+
+  const extracted = finalizeProduct(ai || heuristic || {}, url)
+  return {
+    ok: Boolean(extracted.title),
+    extraction: extracted,
+    used_ai: Boolean(ai),
+    heuristic_found: Boolean(heuristic),
+  }
+}
+
+function tokenSet(value = '') {
+  return new Set(normalizeSearchText(value).split(' ').filter(Boolean))
+}
+
+function similarity(a = '', b = '') {
+  const sa = tokenSet(a)
+  const sb = tokenSet(b)
+  if (!sa.size || !sb.size) return 0
+  let inter = 0
+  for (const token of sa) if (sb.has(token)) inter += 1
+  const union = new Set([...sa, ...sb]).size || 1
+  return inter / union
+}
+
+async function matchProducts({ primary, candidates = [] }) {
+  const normPrimary = finalizeProduct(primary || {})
+  const scored = candidates.map((candidate) => {
+    const norm = finalizeProduct(candidate || {})
+    const hardMatch = Boolean(normPrimary.ean_gtin && norm.ean_gtin && normPrimary.ean_gtin === norm.ean_gtin)
+      || Boolean(normPrimary.mpn && norm.mpn && normPrimary.mpn === norm.mpn)
+      || Boolean(normPrimary.model_key && norm.model_key && normPrimary.model_key === norm.model_key)
+    const score = hardMatch ? 0.98 : similarity(`${normPrimary.brand} ${normPrimary.title}`, `${norm.brand} ${norm.title}`)
+    return { ...norm, score, hardMatch }
+  })
+
+  if (OPENAI_API_KEY && scored.length) {
+    const ai = await callOpenAIJson({
+      schemaName: 'product_match',
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['matches'],
+        properties: {
+          matches: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['index', 'score', 'is_same_product'],
+              properties: {
+                index: { type: 'integer' },
+                score: { type: 'number' },
+                is_same_product: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      instructions: 'Compare one primary product with candidate offers. Return which candidates are the same underlying product. Prefer exact storage, model, MPN, EAN and brand consistency.',
+      payload: {
+        primary: normPrimary,
+        candidates: scored.map((item, index) => ({ index, ...item })),
+      },
+    }).catch(() => null)
+    if (ai?.matches?.length) {
+      return ai.matches
+        .filter((item) => item.is_same_product)
+        .map((item) => ({ ...scored[item.index], score: item.score, ai_match: true }))
+        .sort((a, b) => b.score - a.score)
+    }
+  }
+
+  return scored.filter((item) => item.score >= 0.78).sort((a, b) => b.score - a.score)
 }
 
 app.get('/health', (_req, res) => {
-  res.json({
-    ok: true,
-    service: 'ai_service',
-    model: AI_MODEL,
-    aiReady: !!OPENAI_API_KEY,
-    mode: OPENAI_API_KEY ? 'live_ai' : 'disabled',
-  })
+  res.json({ ok: true, service: 'ai_service', model: AI_MODEL, openaiEnabled: Boolean(OPENAI_API_KEY) })
 })
 
 app.post('/evaluate', (req, res) => {
   const score = Number(req.body?.deal_score || 0)
-  const evaluation = score >= 88
-    ? { label: 'Jetzt kaufen', verdict: 'buy' }
-    : score >= 78
-      ? { label: 'Guter Kauf', verdict: 'consider' }
-      : { label: 'Beobachten', verdict: 'watch' }
+  const evaluation = score >= 88 ? { label: 'Jetzt kaufen', verdict: 'buy' } : score >= 78 ? { label: 'Guter Kauf', verdict: 'consider' } : { label: 'Beobachten', verdict: 'watch' }
   res.json({ ok: true, evaluation })
 })
 
 app.post('/extract', async (req, res) => {
   try {
-    const url = cleanUrl(req.body?.url) || null
-    const html = compactHtml(req.body?.html || '')
-    const query = cleanText(req.body?.query || '')
-    const titleHint = cleanText(req.body?.titleHint || '')
-    const fallbackCurrency = cleanText(req.body?.currency || 'CHF') || 'CHF'
-
-    if (!html) return res.status(400).json({ ok: false, error: 'html fehlt' })
-
-    const system = [
-      'Du extrahierst präzise Produktdaten für einen Schweizer Preisvergleich.',
-      'Antworte nur als JSON.',
-      'Wenn ein Feld nicht klar erkennbar ist, nutze null.',
-      'Nutze nur Informationen, die aus HTML oder URL ableitbar sind.',
-      'Wähle echte Produktdaten, keine Kategorien oder Shoptexte.',
-    ].join(' ')
-
-    const user = JSON.stringify({
-      task: 'Extrahiere ein einzelnes kaufbares Produkt aus dieser HTML-Seite.',
-      target_schema: {
-        title: 'string',
-        brand: 'string|null',
-        category: 'string|null',
-        price: 'number|null',
-        currency: 'string|null',
-        availability: 'string|null',
-        image_url: 'string|null',
-        mpn: 'string|null',
-        ean_gtin: 'string|null',
-        summary: 'string|null',
-        confidence_score: 'number 0..1',
-      },
-      context: {
-        url,
-        query,
-        titleHint,
-        preferredCurrency: fallbackCurrency,
-      },
-      html,
-    })
-
-    const raw = await callOpenAIJson({ system, user, temperature: 0.05 })
-    const extracted = normalizeExtractedOffer(raw, { title: titleHint, currency: fallbackCurrency })
-
-    if (!extracted.title) {
-      return res.json({ ok: true, extracted: null, reason: 'no_product_detected' })
-    }
-
-    res.json({ ok: true, extracted })
+    const result = await extractProduct(req.body || {})
+    res.json(result)
   } catch (err) {
-    res.status(err.status || 500).json({ ok: false, error: String(err.message || err) })
+    res.status(500).json({ ok: false, error: String(err.message || err) })
   }
 })
 
 app.post('/match', async (req, res) => {
   try {
-    const offer = req.body?.offer || {}
-    const candidates = Array.isArray(req.body?.candidates) ? req.body.candidates.slice(0, 20) : []
-    if (!cleanText(offer.title || '')) return res.status(400).json({ ok: false, error: 'offer.title fehlt' })
-    if (!candidates.length) return res.json({ ok: true, match: { canonical_id: null, reason: 'no_candidates', confidence_score: 0 } })
-
-    const system = [
-      'Du entscheidest, ob ein Shop-Angebot zu einem bestehenden kanonischen Produkt gehört.',
-      'Antworte nur als JSON.',
-      'Wähle nur dann eine canonical_id, wenn Modell, Speichervariante und Produktfamilie wirklich zusammenpassen.',
-      'Bei Unsicherheit gib canonical_id=null zurück.',
-    ].join(' ')
-
-    const user = JSON.stringify({
-      task: 'Ordne das Offer höchstens einem Kandidaten zu.',
-      target_schema: {
-        canonical_id: 'string|null',
-        reason: 'string|null',
-        alias_text: 'string|null',
-        confidence_score: 'number 0..1',
-      },
-      offer,
-      candidates,
-    })
-
-    const raw = await callOpenAIJson({ system, user, temperature: 0.0 })
-    res.json({ ok: true, match: normalizeMatchResult(raw, candidates) })
+    const matches = await matchProducts(req.body || {})
+    res.json({ ok: true, matches })
   } catch (err) {
-    res.status(err.status || 500).json({ ok: false, error: String(err.message || err) })
+    res.status(500).json({ ok: false, error: String(err.message || err) })
   }
 })
 
-app.post('/rank', async (req, res) => {
-  try {
-    const query = cleanText(req.body?.query || '')
-    const items = Array.isArray(req.body?.items) ? req.body.items.slice(0, 30) : []
-    if (!query) return res.status(400).json({ ok: false, error: 'query fehlt' })
-    if (!items.length) return res.json({ ok: true, ranking: { ranked_ids: [], summary: null } })
-
-    const system = [
-      'Du rankst Produktresultate für einen Schweizer Produktvergleich.',
-      'Antworte nur als JSON.',
-      'Bevorzuge genaue Modelltreffer, Schweizer Relevanz, gute Preise und mehrere aktive Shops.',
-    ].join(' ')
-
-    const user = JSON.stringify({
-      task: 'Ordne die Resultate nach Relevanz und Kaufnutzen.',
-      target_schema: {
-        ranked_ids: 'string[]',
-        summary: 'string|null',
-      },
-      query,
-      items,
-    })
-
-    const raw = await callOpenAIJson({ system, user, temperature: 0.05 })
-    res.json({ ok: true, ranking: normalizeRankResult(raw, items) })
-  } catch (err) {
-    res.status(err.status || 500).json({ ok: false, error: String(err.message || err) })
-  }
-})
-
-app.post('/search-plan', async (req, res) => {
-  try {
-    const query = cleanText(req.body?.query || '')
-    const swissSources = Array.isArray(req.body?.sources) ? req.body.sources.slice(0, 20) : []
-    if (!query) return res.status(400).json({ ok: false, error: 'query fehlt' })
-
-    const system = [
-      'Du planst Suchphrasen für eine Schweizer AI-Produktsuche.',
-      'Antworte nur als JSON.',
-      'Nutze suchstarke, schweizspezifische und produktnahe Formulierungen.',
-    ].join(' ')
-
-    const user = JSON.stringify({
-      task: 'Erzeuge fokussierte Suchphrasen für Produktdiscovery.',
-      target_schema: {
-        search_terms: 'string[]',
-        notes: 'string|null',
-      },
-      query,
-      swissSources,
-    })
-
-    const raw = await callOpenAIJson({ system, user, temperature: 0.15 })
-    res.json({ ok: true, plan: normalizePlanResult(raw) })
-  } catch (err) {
-    res.status(err.status || 500).json({ ok: false, error: String(err.message || err) })
-  }
-})
-
-app.listen(PORT, () => {
-  console.log(`ai service on ${PORT}`)
-})
+app.listen(PORT, () => console.log(`ai service on ${PORT}`))

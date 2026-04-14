@@ -7,8 +7,16 @@ import { fileURLToPath } from 'url'
 import { ensureCoreSchema } from '../../database/ensure_schema.mjs'
 import { normalizeDbUrl } from '../../database/normalize_db_url.mjs'
 import { enqueueLiveSearchTask } from './ai_search_runtime.mjs'
-import { fetchCanonicalProductBySlug, fetchCanonicalSearchResults, mergeSearchResults, resolveCanonicalRedirect } from './canonical_search_runtime.mjs'
-import { buildGoLiveReadiness } from './go_live_readiness.mjs'
+import {
+  fetchCanonicalProductBySlug,
+  fetchCanonicalSearchResults,
+  fetchCanonicalSuggestions,
+  fetchHomeComparisons,
+  fetchRelatedSuggestions,
+  fetchSimilarCanonicalProducts,
+  mergeSearchResults,
+  resolveCanonicalRedirect,
+} from './canonical_search_runtime.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -23,11 +31,9 @@ const PORT = Number(process.env.PORT || 3002)
 const JWT_SECRET = process.env.JWT_SECRET || 'replace_me_with_long_secret'
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@kauvio.ch'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme123'
-const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://ai_service:3010'
 const AFFILIATE_DEFAULT_TAG = process.env.AFFILIATE_DEFAULT_TAG || 'kauvio-default'
 
 const DATABASE_URL = normalizeDbUrl(process.env.DATABASE_URL)
-console.log('Using DB host from DATABASE_URL:', new URL(DATABASE_URL).hostname)
 const pool = new Pool({ connectionString: DATABASE_URL })
 
 function auth(req, res, next) {
@@ -97,25 +103,6 @@ async function dbCount(sql) {
   }
 }
 
-async function getAiControls() {
-  const result = await pool.query(`SELECT control_key, is_enabled, control_value_json, description, updated_by, updated_at FROM ai_runtime_controls ORDER BY control_key ASC`).catch(() => ({ rows: [] }))
-  return result.rows
-}
-
-async function getSwissSourcesAdmin() {
-  const result = await pool.query(`SELECT source_key, display_name, provider_kind, source_kind, country_code, language_code, base_url, priority, confidence_score, refresh_interval_minutes, is_active, source_size, is_small_shop, discovery_weight, runtime_score, manual_boost, last_runtime_status, last_runtime_error, last_runtime_at, categories_json, notes, auto_discovered, shop_domain, updated_at FROM swiss_sources ORDER BY priority DESC, confidence_score DESC, display_name ASC`).catch(() => ({ rows: [] }))
-  return result.rows
-}
-
-async function getAiRuntimeEvents(limit = 50) {
-  const result = await pool.query(`SELECT id, event_type, source_key, severity, event_payload_json, created_by, created_at FROM ai_runtime_events ORDER BY created_at DESC LIMIT $1`, [limit]).catch(() => ({ rows: [] }))
-  return result.rows
-}
-
-async function logAiRuntimeEvent(eventType, sourceKey, severity = 'info', payload = {}, createdBy = 'system') {
-  await pool.query(`INSERT INTO ai_runtime_events(event_type, source_key, severity, event_payload_json, created_by, created_at) VALUES ($1,$2,$3,$4,$5,NOW())`, [eventType, sourceKey || null, severity, JSON.stringify(payload || {}), createdBy]).catch(() => {})
-}
-
 async function buildSystemHealth() {
   const checks = {}
   const add = async (name, sql) => {
@@ -126,69 +113,32 @@ async function buildSystemHealth() {
       checks[name] = { ok: false, error: String(err.message || err) }
     }
   }
-  await add('products', 'SELECT COUNT(*)::int AS c FROM products')
-  await add('offers', 'SELECT COUNT(*)::int AS c FROM product_offers')
-  await add('search_tasks', 'SELECT COUNT(*)::int AS c FROM search_tasks')
   await add('canonical_products', 'SELECT COUNT(*)::int AS c FROM canonical_products')
+  await add('source_offers_v2', 'SELECT COUNT(*)::int AS c FROM source_offers_v2')
+  await add('search_tasks', 'SELECT COUNT(*)::int AS c FROM search_tasks')
   await add('swiss_sources', 'SELECT COUNT(*)::int AS c FROM swiss_sources')
-  await add('ai_runtime_controls', 'SELECT COUNT(*)::int AS c FROM ai_runtime_controls')
-  await add('ai_runtime_events', 'SELECT COUNT(*)::int AS c FROM ai_runtime_events')
-  await add('ai_query_memory', 'SELECT COUNT(*)::int AS c FROM ai_query_memory')
-  await add('ai_seed_candidates', 'SELECT COUNT(*)::int AS c FROM ai_seed_candidates')
-  await add('search_requests', 'SELECT COUNT(*)::int AS c FROM search_requests')
   await add('web_discovery_results', 'SELECT COUNT(*)::int AS c FROM web_discovery_results')
+  await add('ai_seed_candidates', 'SELECT COUNT(*)::int AS c FROM ai_seed_candidates')
   return checks
 }
 
-function buildAssistantPlan(message = '') {
-  const text = String(message || '').toLowerCase().trim()
-  if (!text) return { summary: 'Keine Eingabe', actions: [] }
-  const actions = []
-  if (/(status|health|go live|launch|bereit|readiness)/.test(text)) actions.push({ type: 'go_live_readiness' })
-  if (/(kleine shops|small shops).*(stärker|boosten|mehr)/.test(text)) actions.push({ type: 'set_ai_control', control_key: 'small_shop_balance', patch: { min_small_shops: 3, boost: 24 } })
-  if (/(open web|web discovery|offenes web|google)/.test(text)) actions.push({ type: 'set_ai_control', control_key: 'open_web_discovery', patch: { result_limit: 22, product_fetch_limit: 14 } })
-  if (/(runtime|laufzeit).*(notiz|note|merken)/.test(text)) actions.push({ type: 'log_runtime_note', note: message })
-  const searchMatch = text.match(/(?:ki suche|ai search|suche starten|search start)\s*:?\s*(.+)$/i)
-  if (searchMatch?.[1]) actions.push({ type: 'start_ai_search', query: searchMatch[1].trim() })
-  return { summary: actions.length ? 'Sichere AI-Backend-Aktionen erkannt.' : 'Keine sichere Aktion erkannt.', actions }
+async function getAiControls() {
+  const result = await pool.query(`SELECT control_key, is_enabled, control_value_json, description, updated_by, updated_at FROM ai_runtime_controls ORDER BY control_key ASC`).catch(() => ({ rows: [] }))
+  return result.rows
 }
 
-async function executeAssistantAction(action, requestedBy = 'admin') {
-  if (action.type === 'go_live_readiness') {
-    const readiness = await buildGoLiveReadiness(pool, { jwtSecret: JWT_SECRET, adminPassword: ADMIN_PASSWORD, aiServiceUrl: AI_SERVICE_URL })
-    await logAiRuntimeEvent('assistant_go_live_readiness', null, readiness.ready ? 'info' : 'warning', readiness, requestedBy)
-    return { ok: true, type: action.type, readiness }
-  }
-  if (action.type === 'start_ai_search') {
-    const query = String(action.query || '').trim()
-    if (!query) return { ok: false, type: action.type, error: 'Suchbegriff fehlt.' }
-    const task = await enqueueLiveSearchTask(pool, query, requestedBy).catch(() => null)
-    await logAiRuntimeEvent('assistant_start_ai_search', null, 'info', { query, taskId: task?.id || null }, requestedBy)
-    return { ok: true, type: action.type, task: task ? publicTaskShape(task) : null }
-  }
-  if (action.type === 'set_ai_control') {
-    const existing = await pool.query(`SELECT control_value_json FROM ai_runtime_controls WHERE control_key = $1 LIMIT 1`, [action.control_key]).catch(() => ({ rows: [] }))
-    const current = normalizeJsonInput(existing.rows[0]?.control_value_json, {})
-    const next = { ...current, ...normalizeJsonInput(action.patch, {}) }
-    const updated = await pool.query(`UPDATE ai_runtime_controls SET control_value_json = $2, updated_by = $3, updated_at = NOW() WHERE control_key = $1 RETURNING control_key, is_enabled, control_value_json, description, updated_by, updated_at`, [action.control_key, JSON.stringify(next), requestedBy]).catch(() => ({ rows: [] }))
-    await logAiRuntimeEvent('assistant_set_ai_control', action.control_key, 'info', { patch: action.patch, next }, requestedBy)
-    return { ok: true, type: action.type, control: updated.rows[0] || null }
-  }
-  if (action.type === 'log_runtime_note') {
-    await logAiRuntimeEvent('assistant_runtime_note', null, 'info', { note: action.note || '' }, requestedBy)
-    return { ok: true, type: action.type }
-  }
-  return { ok: false, type: action.type, error: 'Unbekannte Aktion' }
+async function getSwissSourcesAdmin() {
+  const result = await pool.query(`SELECT source_key, display_name, provider_kind, source_kind, country_code, language_code, base_url, priority, confidence_score, refresh_interval_minutes, is_active, source_size, is_small_shop, discovery_weight, runtime_score, manual_boost, last_runtime_status, last_runtime_error, last_runtime_at, categories_json, notes, auto_discovered, shop_domain, updated_at FROM swiss_sources ORDER BY priority DESC, confidence_score DESC, display_name ASC`).catch(() => ({ rows: [] }))
+  return result.rows
+}
+
+async function logAiRuntimeEvent(eventType, sourceKey, severity = 'info', payload = {}, createdBy = 'system') {
+  await pool.query(`INSERT INTO ai_runtime_events(event_type, source_key, severity, event_payload_json, created_by, created_at) VALUES ($1,$2,$3,$4,$5,NOW())`, [eventType, sourceKey || null, severity, JSON.stringify(payload || {}), createdBy]).catch(() => {})
 }
 
 app.get('/api/health', async (_req, res) => {
   const db = await pool.query('SELECT NOW() AS now')
   res.json({ ok: true, service: 'webapp', dbTime: db.rows[0].now })
-})
-
-app.get('/api/ready', async (_req, res) => {
-  const readiness = await buildGoLiveReadiness(pool, { jwtSecret: JWT_SECRET, adminPassword: ADMIN_PASSWORD, aiServiceUrl: AI_SERVICE_URL })
-  res.status(readiness.ready ? 200 : 503).json(readiness)
 })
 
 app.post('/api/ai/search/start', async (req, res) => {
@@ -207,33 +157,61 @@ app.post('/api/admin/login', (req, res) => {
   res.json({ token, user: { email, role: 'admin' } })
 })
 
+app.get('/api/products/suggest', async (req, res) => {
+  const q = String(req.query.q || '').trim()
+  const items = await fetchCanonicalSuggestions(pool, q, 8).catch(() => [])
+  res.json({ items })
+})
+
+app.get('/api/search/related', async (req, res) => {
+  const q = String(req.query.q || '').trim()
+  const results = await fetchCanonicalSearchResults(pool, q, 1).catch(() => [])
+  const best = results[0] || null
+  const similarItems = best?.canonical_id ? await fetchSimilarCanonicalProducts(pool, best.canonical_id, 6).catch(() => []) : []
+  const suggestions = await fetchRelatedSuggestions(pool, q, 8).catch(() => [])
+  res.json({ best, similarItems, suggestions })
+})
+
 app.get('/api/products', async (req, res) => {
   const q = String(req.query.q || '').trim()
-  const params = []
-  let where = ''
-  if (q) {
-    params.push(`%${q}%`)
-    where = 'WHERE p.title ILIKE $1 OR p.brand ILIKE $1 OR p.category ILIKE $1'
+  const requestedLimit = Number(req.query.limit || (q ? 24 : 6))
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, q ? 48 : 6)) : (q ? 24 : 6)
+
+  if (!q) {
+    const items = await fetchHomeComparisons(pool, 6).catch(() => [])
+    return res.json({ items, liveSearch: null, similarItems: [], suggestions: [] })
   }
-  const result = await pool.query(`SELECT p.slug, p.title, p.brand, p.category, p.ai_summary, p.deal_score, p.image_url, COALESCE(MIN(o.price), p.price) AS price, COALESCE((ARRAY_AGG(o.shop_name ORDER BY o.price ASC, o.updated_at DESC))[1], p.shop_name) AS shop_name, COUNT(o.*)::int AS offer_count, MAX(p.updated_at) AS updated_at FROM products p LEFT JOIN product_offers o ON o.product_slug = p.slug AND COALESCE(o.is_hidden, false) = false ${where} GROUP BY p.slug, p.title, p.brand, p.category, p.ai_summary, p.deal_score, p.price, p.shop_name, p.image_url ORDER BY updated_at DESC, price ASC NULLS LAST LIMIT 100`, params)
-  const productItems = result.rows.map((r) => ({ ...r, price: r.price != null ? Number(r.price) : null, decision: r.deal_score >= 88 ? { label: 'Jetzt kaufen' } : r.deal_score >= 78 ? { label: 'Guter Kauf' } : { label: 'Live Preis' } }))
-  const canonicalItems = await fetchCanonicalSearchResults(pool, q, 60).catch(() => [])
-  const items = mergeSearchResults(productItems, canonicalItems, 100)
-  await pool.query('INSERT INTO search_logs(query, result_count) VALUES ($1,$2)', [q, items.length]).catch(() => {})
+
+  const canonicalItems = await fetchCanonicalSearchResults(pool, q, limit).catch(() => [])
+  const items = mergeSearchResults([], canonicalItems, limit)
   let liveSearch = null
   if (q && items.length === 0) liveSearch = await enqueueLiveSearchTask(pool, q, 'public_search').catch(() => null)
-  res.json({ items, liveSearch: liveSearch ? publicTaskShape(liveSearch) : null })
+
+  const best = items[0] || null
+  const similarItems = best?.canonical_id ? await fetchSimilarCanonicalProducts(pool, best.canonical_id, 6).catch(() => []) : []
+  const suggestions = await fetchRelatedSuggestions(pool, q, 8).catch(() => [])
+  await pool.query('INSERT INTO search_logs(query, result_count) VALUES ($1,$2)', [q, items.length]).catch(() => {})
+  res.json({ items, liveSearch: liveSearch ? publicTaskShape(liveSearch) : null, similarItems, suggestions })
 })
 
 app.get('/api/products/:slug', async (req, res) => {
   const canonical = await fetchCanonicalProductBySlug(pool, req.params.slug).catch(() => null)
   if (canonical) return res.json(canonical)
-  const product = await pool.query('SELECT * FROM products WHERE slug = $1 LIMIT 1', [req.params.slug])
+  const product = await pool.query('SELECT * FROM products WHERE slug = $1 LIMIT 1', [req.params.slug]).catch(() => ({ rows: [] }))
   if (!product.rows.length) return res.status(404).json({ error: 'Produkt nicht gefunden' })
-  const offers = await pool.query('SELECT shop_name, price, currency, product_url, affiliate_url, image_url, updated_at, is_hidden FROM product_offers WHERE product_slug = $1 AND COALESCE(is_hidden, false) = false ORDER BY price ASC, updated_at DESC', [req.params.slug])
+  const offers = await pool.query('SELECT shop_name, price, currency, product_url, affiliate_url, image_url, updated_at, is_hidden FROM product_offers WHERE product_slug = $1 AND COALESCE(is_hidden, false) = false ORDER BY price ASC, updated_at DESC', [req.params.slug]).catch(() => ({ rows: [] }))
   const enrichedOffers = offers.rows.map(normalizeOffer)
   const cheapest = enrichedOffers[0] || null
-  res.json({ ...product.rows[0], price: cheapest ? Number(cheapest.price) : product.rows[0].price, shop_name: cheapest?.shop_name || product.rows[0].shop_name, product_url: cheapest?.product_url || product.rows[0].product_url, redirect_url: cheapest?.redirect_url || withAffiliate(product.rows[0].product_url), offers: enrichedOffers })
+  res.json({
+    ...product.rows[0],
+    price: cheapest ? Number(cheapest.price) : product.rows[0].price,
+    shop_name: cheapest?.shop_name || product.rows[0].shop_name,
+    product_url: cheapest?.product_url || product.rows[0].product_url,
+    redirect_url: cheapest?.redirect_url || withAffiliate(product.rows[0].product_url),
+    offers: enrichedOffers,
+    similarItems: [],
+    suggestions: await fetchRelatedSuggestions(pool, product.rows[0].title || '', 8).catch(() => []),
+  })
 })
 
 app.get('/r/:slug/:shop?', async (req, res) => {
@@ -244,30 +222,18 @@ app.get('/r/:slug/:shop?', async (req, res) => {
     await pool.query(`INSERT INTO outbound_clicks(product_slug, shop_name, target_url, ip_address, user_agent, referer) VALUES ($1,$2,$3,$4,$5,$6)`, [slug, canonicalTarget.shop_name || null, target, req.socket?.remoteAddress || null, req.headers['user-agent'] || null, req.headers.referer || req.headers.referrer || null]).catch(() => {})
     return res.redirect(target)
   }
-  let row
-  if (shop) row = await pool.query('SELECT shop_name, product_url, affiliate_url FROM product_offers WHERE product_slug = $1 AND LOWER(shop_name) = LOWER($2) AND COALESCE(is_hidden, false) = false LIMIT 1', [slug, shop])
-  if (!row?.rows?.length) row = await pool.query('SELECT shop_name, product_url, affiliate_url FROM product_offers WHERE product_slug = $1 AND COALESCE(is_hidden, false) = false ORDER BY price ASC, updated_at DESC LIMIT 1', [slug])
-  const chosen = row.rows[0] || null
-  if (!chosen || !(chosen.affiliate_url || chosen.product_url)) return res.status(404).send('Ziel nicht gefunden')
-  const target = withAffiliate(chosen.affiliate_url || chosen.product_url)
-  await pool.query(`INSERT INTO outbound_clicks(product_slug, shop_name, target_url, ip_address, user_agent, referer) VALUES ($1,$2,$3,$4,$5,$6)`, [slug, chosen.shop_name || null, target, req.socket?.remoteAddress || null, req.headers['user-agent'] || null, req.headers.referer || req.headers.referrer || null]).catch(() => {})
-  res.redirect(target)
+  return res.status(404).send('Ziel nicht gefunden')
 })
 
 app.get('/api/admin/dashboard', auth, async (_req, res) => {
-  const readiness = await buildGoLiveReadiness(pool, { jwtSecret: JWT_SECRET, adminPassword: ADMIN_PASSWORD, aiServiceUrl: AI_SERVICE_URL })
   const stats = {
-    products: await dbCount('SELECT COUNT(*)::int AS c FROM products'),
-    offers: await dbCount('SELECT COUNT(*)::int AS c FROM product_offers'),
     searchTasks: await dbCount('SELECT COUNT(*)::int AS c FROM search_tasks'),
     autonomousSeeds: await dbCount('SELECT COUNT(*)::int AS c FROM ai_seed_candidates'),
     learnedQueries: await dbCount('SELECT COUNT(*)::int AS c FROM ai_query_memory'),
     openWebPages: await dbCount('SELECT COUNT(*)::int AS c FROM web_discovery_results'),
-    searchRequests: await dbCount('SELECT COUNT(*)::int AS c FROM search_requests'),
   }
-  res.json({ stats, readiness })
+  res.json({ stats })
 })
-
 app.get('/api/admin/system-health', auth, async (_req, res) => res.json({ ok: true, checks: await buildSystemHealth() }))
 app.post('/api/admin/ai/search/start', auth, async (req, res) => {
   const query = String(req.body?.query || '').trim()
@@ -289,53 +255,8 @@ app.get('/api/admin/web-discovery-results', auth, async (_req, res) => {
   const items = await pool.query(`SELECT id, query, source_domain, page_url, result_title, result_rank, discovered_shop, discovered_product, updated_at FROM web_discovery_results ORDER BY updated_at DESC LIMIT 40`).catch(() => ({ rows: [] }))
   res.json({ items: items.rows })
 })
-app.get('/api/admin/canonical-products', auth, async (req, res) => {
-  const q = String(req.query.q || '').trim()
-  const params = []
-  let where = ''
-  if (q) { params.push(`%${q}%`); where = 'WHERE title ILIKE $1 OR brand ILIKE $1 OR category ILIKE $1' }
-  const result = await pool.query(`SELECT id, canonical_key, title, brand, category, image_url, best_price, best_price_currency, offer_count, source_count, popularity_score, freshness_priority, deal_score, deal_label, updated_at FROM canonical_products ${where} ORDER BY popularity_score DESC, updated_at DESC LIMIT 40`, params).catch(() => ({ rows: [] }))
-  res.json({ items: result.rows.map((r) => ({ ...r, best_price: r.best_price != null ? Number(r.best_price) : null })) })
-})
 app.get('/api/admin/ai/controls', auth, async (_req, res) => res.json({ items: await getAiControls() }))
-app.put('/api/admin/ai/controls/:controlKey', auth, async (req, res) => {
-  const controlKey = String(req.params.controlKey || '').trim()
-  const isEnabled = typeof req.body?.is_enabled === 'boolean' ? req.body.is_enabled : true
-  const controlValueJson = normalizeJsonInput(req.body?.control_value_json, {})
-  const result = await pool.query(`UPDATE ai_runtime_controls SET is_enabled = $2, control_value_json = $3, updated_by = $4, updated_at = NOW() WHERE control_key = $1 RETURNING control_key, is_enabled, control_value_json, description, updated_by, updated_at`, [controlKey, isEnabled, JSON.stringify(controlValueJson), req.user?.email || 'admin']).catch(() => ({ rows: [] }))
-  if (!result.rows.length) return res.status(404).json({ error: 'AI-Control nicht gefunden.' })
-  await logAiRuntimeEvent('control_updated', controlKey, 'info', { is_enabled: isEnabled, control_value_json: controlValueJson }, req.user?.email || 'admin')
-  res.json({ ok: true, item: result.rows[0] })
-})
-app.get('/api/admin/ai/runtime-events', auth, async (_req, res) => res.json({ items: await getAiRuntimeEvents(20) }))
-app.post('/api/admin/ai/runtime-events', auth, async (req, res) => {
-  const eventType = String(req.body?.event_type || 'manual_note').trim()
-  const sourceKey = String(req.body?.source_key || '').trim() || null
-  const severity = String(req.body?.severity || 'info').trim() || 'info'
-  const payload = normalizeJsonInput(req.body?.event_payload_json, { note: String(req.body?.note || '') })
-  await logAiRuntimeEvent(eventType, sourceKey, severity, payload, req.user?.email || 'admin')
-  res.json({ ok: true })
-})
 app.get('/api/admin/swiss-sources', auth, async (_req, res) => res.json({ items: await getSwissSourcesAdmin() }))
-app.put('/api/admin/swiss-sources/:sourceKey', auth, async (req, res) => {
-  const sourceKey = String(req.params.sourceKey || '').trim().toLowerCase()
-  const body = req.body || {}
-  const result = await pool.query(`UPDATE swiss_sources SET priority = COALESCE($2, priority), confidence_score = COALESCE($3, confidence_score), refresh_interval_minutes = COALESCE($4, refresh_interval_minutes), is_active = COALESCE($5, is_active), source_size = COALESCE(NULLIF($6, ''), source_size), is_small_shop = COALESCE($7, is_small_shop), discovery_weight = COALESCE($8, discovery_weight), runtime_score = COALESCE($9, runtime_score), manual_boost = COALESCE($10, manual_boost), last_runtime_status = COALESCE(NULLIF($11, ''), last_runtime_status), last_runtime_error = $12, last_runtime_at = CASE WHEN $11 IS NOT NULL OR $12 IS NOT NULL THEN NOW() ELSE last_runtime_at END, updated_at = NOW() WHERE source_key = $1 RETURNING source_key, display_name, provider_kind, source_kind, country_code, language_code, base_url, priority, confidence_score, refresh_interval_minutes, is_active, source_size, is_small_shop, discovery_weight, runtime_score, manual_boost, last_runtime_status, last_runtime_error, last_runtime_at, categories_json, notes, auto_discovered, shop_domain, updated_at`, [sourceKey, body.priority != null ? Number(body.priority) : null, body.confidence_score != null ? Number(body.confidence_score) : null, body.refresh_interval_minutes != null ? Number(body.refresh_interval_minutes) : null, typeof body.is_active === 'boolean' ? body.is_active : null, body.source_size ?? null, typeof body.is_small_shop === 'boolean' ? body.is_small_shop : null, body.discovery_weight != null ? Number(body.discovery_weight) : null, body.runtime_score != null ? Number(body.runtime_score) : null, body.manual_boost != null ? Number(body.manual_boost) : null, body.last_runtime_status ?? null, body.last_runtime_error ?? null]).catch(() => ({ rows: [] }))
-  if (!result.rows.length) return res.status(404).json({ error: 'Schweizer Quelle nicht gefunden.' })
-  await logAiRuntimeEvent('source_tuned', sourceKey, 'info', body, req.user?.email || 'admin')
-  res.json({ ok: true, item: result.rows[0] })
-})
-app.get('/api/admin/autonomous/seeds', auth, async (_req, res) => {
-  const items = await pool.query(`SELECT id, query, normalized_query, seed_source, priority, status, last_enqueued_task_id, notes, updated_at, last_run_at FROM ai_seed_candidates ORDER BY priority DESC, updated_at DESC LIMIT 40`).catch(() => ({ rows: [] }))
-  res.json({ items: items.rows })
-})
-app.post('/api/admin/assistant/plan', auth, async (req, res) => res.json(buildAssistantPlan(String(req.body?.message || ''))))
-app.post('/api/admin/assistant/execute', auth, async (req, res) => {
-  const actions = Array.isArray(req.body?.actions) ? req.body.actions : []
-  const results = []
-  for (const action of actions) results.push(await executeAssistantAction(action, req.user?.email || 'admin'))
-  res.json({ ok: true, results })
-})
 
 app.use(express.static(distDir))
 app.get('*', (req, res) => {

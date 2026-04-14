@@ -4,7 +4,7 @@ function normalizeKey(input = '') {
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\b(chf|smartphone|notebook|kopfhorer|kopfhorer|headphones|laptop|tablet|tv|audio)\b/g, ' ')
+    .replace(/\b(chf|smartphone|notebook|kopfhorer|headphones|laptop|tablet|tv|audio)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -19,6 +19,32 @@ function decisionFromCanonical(row) {
   if (Number(row.deal_score || 0) >= 78) return { label: 'Guter Preis' }
   if (Number(row.offer_count || 0) >= 3) return { label: 'KI Vergleich' }
   return { label: 'Live KI' }
+}
+
+function mapCanonicalRow(row) {
+  return {
+    slug: canonicalSlug(row.id),
+    title: row.title,
+    brand: row.brand,
+    category: row.category,
+    ai_summary: row.ai_summary,
+    image_url: row.image_url,
+    price: row.price != null ? Number(row.price) : null,
+    shop_name: row.shop_name,
+    offer_count: Number(row.offer_count || 0),
+    source_count: Number(row.source_count || 0),
+    popularity_score: Number(row.popularity_score || 0),
+    freshness_priority: Number(row.freshness_priority || 0),
+    deal_score: Number(row.deal_score || 0),
+    deal_label: row.deal_label || null,
+    price_avg_30d: row.price_avg_30d != null ? Number(row.price_avg_30d) : null,
+    price_low_30d: row.price_low_30d != null ? Number(row.price_low_30d) : null,
+    price_high_30d: row.price_high_30d != null ? Number(row.price_high_30d) : null,
+    updated_at: row.updated_at,
+    is_canonical: true,
+    canonical_id: row.id,
+    decision: decisionFromCanonical(row),
+  }
 }
 
 export async function fetchCanonicalSearchResults(pool, query = '', limit = 60) {
@@ -60,29 +86,92 @@ export async function fetchCanonicalSearchResults(pool, query = '', limit = 60) 
     LIMIT $${params.length}
   `
   const result = await pool.query(sql, params)
-  return result.rows.map((row) => ({
-    slug: canonicalSlug(row.id),
-    title: row.title,
-    brand: row.brand,
-    category: row.category,
-    ai_summary: row.ai_summary,
-    image_url: row.image_url,
-    price: row.price != null ? Number(row.price) : null,
-    shop_name: row.shop_name,
-    offer_count: Number(row.offer_count || 0),
-    source_count: Number(row.source_count || 0),
-    popularity_score: Number(row.popularity_score || 0),
-    freshness_priority: Number(row.freshness_priority || 0),
-    deal_score: Number(row.deal_score || 0),
-    deal_label: row.deal_label || null,
-    price_avg_30d: row.price_avg_30d != null ? Number(row.price_avg_30d) : null,
-    price_low_30d: row.price_low_30d != null ? Number(row.price_low_30d) : null,
-    price_high_30d: row.price_high_30d != null ? Number(row.price_high_30d) : null,
-    updated_at: row.updated_at,
-    is_canonical: true,
-    canonical_id: row.id,
-    decision: decisionFromCanonical(row)
-  }))
+  return result.rows.map(mapCanonicalRow)
+}
+
+export async function fetchHomeComparisons(pool, limit = 6) {
+  const result = await pool.query(`
+    SELECT
+      cp.id,
+      cp.title,
+      cp.brand,
+      cp.category,
+      cp.ai_summary,
+      COALESCE(cp.image_url, (ARRAY_AGG(so.image_url ORDER BY so.updated_at DESC))[1]) AS image_url,
+      COALESCE(cp.best_price, MIN(so.price)) AS price,
+      COALESCE((ARRAY_AGG(so.provider ORDER BY so.price ASC NULLS LAST, so.updated_at DESC))[1], 'KI Index') AS shop_name,
+      COALESCE(cp.offer_count, COUNT(so.*)::int) AS offer_count,
+      COALESCE(cp.source_count, COUNT(DISTINCT so.provider)::int) AS source_count,
+      COALESCE(cp.popularity_score, 0) AS popularity_score,
+      COALESCE(cp.freshness_priority, 0) AS freshness_priority,
+      COALESCE(cp.deal_score, 0) AS deal_score,
+      cp.deal_label,
+      cp.price_avg_30d,
+      cp.price_low_30d,
+      cp.price_high_30d,
+      COALESCE(cp.updated_at, NOW()) AS updated_at
+    FROM canonical_products cp
+    LEFT JOIN source_offers_v2 so ON so.canonical_product_id = cp.id AND so.is_active = true
+    GROUP BY cp.id
+    ORDER BY cp.popularity_score DESC, cp.freshness_priority DESC, updated_at DESC, price ASC NULLS LAST
+    LIMIT $1
+  `, [limit]).catch(() => ({ rows: [] }))
+  return result.rows.map(mapCanonicalRow)
+}
+
+export async function fetchCanonicalSuggestions(pool, query = '', limit = 8) {
+  const q = String(query || '').trim()
+  if (q.length < 2) return []
+  const items = await fetchCanonicalSearchResults(pool, q, limit)
+  return items.slice(0, limit)
+}
+
+export async function fetchSimilarCanonicalProducts(pool, canonicalId, limit = 6) {
+  const base = await pool.query(`SELECT id, title, brand, category FROM canonical_products WHERE id = $1 LIMIT 1`, [canonicalId]).catch(() => ({ rows: [] }))
+  const row = base.rows[0]
+  if (!row) return []
+  const result = await pool.query(`
+    SELECT
+      cp.id,
+      cp.title,
+      cp.brand,
+      cp.category,
+      cp.ai_summary,
+      COALESCE(cp.image_url, (ARRAY_AGG(so.image_url ORDER BY so.updated_at DESC))[1]) AS image_url,
+      COALESCE(cp.best_price, MIN(so.price)) AS price,
+      COALESCE((ARRAY_AGG(so.provider ORDER BY so.price ASC NULLS LAST, so.updated_at DESC))[1], 'KI Index') AS shop_name,
+      COALESCE(cp.offer_count, COUNT(so.*)::int) AS offer_count,
+      COALESCE(cp.source_count, COUNT(DISTINCT so.provider)::int) AS source_count,
+      COALESCE(cp.popularity_score, 0) AS popularity_score,
+      COALESCE(cp.freshness_priority, 0) AS freshness_priority,
+      COALESCE(cp.deal_score, 0) AS deal_score,
+      cp.deal_label,
+      cp.price_avg_30d,
+      cp.price_low_30d,
+      cp.price_high_30d,
+      COALESCE(cp.updated_at, NOW()) AS updated_at
+    FROM canonical_products cp
+    LEFT JOIN source_offers_v2 so ON so.canonical_product_id = cp.id AND so.is_active = true
+    WHERE cp.id <> $1 AND (cp.brand = $2 OR cp.category = $3 OR cp.title ILIKE $4)
+    GROUP BY cp.id
+    ORDER BY (CASE WHEN cp.brand = $2 THEN 1 ELSE 0 END) DESC, cp.popularity_score DESC, cp.updated_at DESC
+    LIMIT $5
+  `, [canonicalId, row.brand || null, row.category || null, `%${(row.title || '').split(' ').slice(0, 2).join(' ')}%`, limit]).catch(() => ({ rows: [] }))
+  return result.rows.map(mapCanonicalRow)
+}
+
+export async function fetchRelatedSuggestions(pool, query = '', limit = 8) {
+  const q = normalizeKey(query)
+  if (!q) return []
+  const tokens = q.split(' ').filter(Boolean)
+  const prefix = tokens.slice(0, 2).join(' ')
+  const result = await pool.query(`
+    SELECT title FROM canonical_products
+    WHERE title ILIKE $1 OR brand ILIKE $1 OR category ILIKE $1
+    ORDER BY popularity_score DESC NULLS LAST, updated_at DESC
+    LIMIT $2
+  `, [`%${prefix}%`, limit]).catch(() => ({ rows: [] }))
+  return [...new Set(result.rows.map((row) => row.title).filter(Boolean))].slice(0, limit)
 }
 
 export function mergeSearchResults(primary = [], canonical = [], limit = 100) {
@@ -121,6 +210,9 @@ export async function fetchCanonicalProductBySlug(pool, slug) {
     [canonicalId]
   )
 
+  const similarItems = await fetchSimilarCanonicalProducts(pool, canonicalId, 6)
+  const suggestions = await fetchRelatedSuggestions(pool, product.rows[0]?.title || '', 8)
+
   const row = product.rows[0]
   const normalizedOffers = offers.rows.map((offer) => ({
     ...offer,
@@ -155,6 +247,8 @@ export async function fetchCanonicalProductBySlug(pool, slug) {
     price_high_30d: row.price_high_30d != null ? Number(row.price_high_30d) : null,
     decision: decisionFromCanonical(row),
     offers: normalizedOffers,
+    similarItems,
+    suggestions,
     is_canonical: true,
     canonical_id: row.id,
     updated_at: row.updated_at,

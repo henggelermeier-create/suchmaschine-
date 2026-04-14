@@ -1,18 +1,12 @@
-.brand-home-page {
-  padding-top: 36px;
-}
-
-.brand-home-page .brand-hero-card {
+.swiss-shell{
   background:
-    radial-gradient(circle at top left, rgba(37, 99, 235, 0.05), transparent 28%),
-    linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.98) 100%);
+    radial-gradient(circle at top left, rgba(37,99,235,.04), transparent 28%),
+    radial-gradient(circle at top right, rgba(220,38,38,.03), transparent 20%),
+    linear-gradient(180deg, #f7f9fc 0%, #f5f7fb 100%);
 }
-
-.brand-home-page .brand-section-panel {
-  background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
+.home-shell .hero-panel{
+  text-align:center;
+  align-items:center;
 }
-
-.brand-home-page .brand-result-card,
-.brand-home-page .brand-list-card {
-  background: linear-gradient(180deg, #ffffff 0%, #fcfdff 100%);
-}
+.home-shell .searchbox-root{max-width:980px;width:100%}
+.home-shell .status-row{justify-content:center}

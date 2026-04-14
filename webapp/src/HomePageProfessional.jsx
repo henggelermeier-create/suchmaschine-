@@ -1,168 +1,102 @@
 import React from 'react'
-import {
-  BadgeSwissFranc,
-  Bot,
-  Search,
-  ShieldCheck,
-  Store,
-  ScanSearch,
-  Trophy,
-  ArrowRight,
-  Sparkles,
-} from 'lucide-react'
+import { BrandWordmark } from './Brand.jsx'
 import SearchSuggestBox from './SearchSuggestBox.jsx'
-import { LogoWordmark } from './Brand.jsx'
+import { Bot, Trophy, Store, BadgeSwissFranc, ScanSearch, ShieldCheck, ArrowRight } from 'lucide-react'
 
 const formatPrice = (value) => value != null ? `CHF ${Number(value).toFixed(2)}` : '—'
 
-function dealTone(item) {
-  const score = Number(item.deal_score || 0)
-  if (score >= 88) return 'brand-pill brand-pill--red'
-  if ((item.shop_name || '').toLowerCase().includes('digitec') || (item.shop_name || '').toLowerCase().includes('brack')) return 'brand-pill brand-pill--blue'
-  return 'brand-pill brand-pill--slate'
+function iconForItem(item) {
+  const label = String(item.decision?.label || item.deal_label || '').toLowerCase()
+  if (label.includes('top') || label.includes('best')) return Trophy
+  if (Number(item.offer_count || 0) >= 3) return Store
+  return Bot
 }
 
-function dealLabel(item) {
-  if (item.decision?.label) return item.decision.label
-  if (Number(item.deal_score || 0) >= 88) return 'Bestpreis'
-  if (Number(item.deal_score || 0) >= 78) return 'Live AI'
-  return 'Schweizer Shops'
-}
-
-function StatusChip({ icon: Icon, label, tone = 'slate' }) {
-  return (
-    <span className={`brand-chip brand-chip--${tone}`}>
-      <Icon size={14} />
-      <span>{label}</span>
-    </span>
-  )
+function toneForItem(item) {
+  const label = String(item.decision?.label || item.deal_label || '').toLowerCase()
+  if (label.includes('top') || label.includes('best')) return 'tone-red'
+  if (Number(item.offer_count || 0) >= 3) return 'tone-slate'
+  return 'tone-blue'
 }
 
 function HomeResultCard({ item }) {
+  const Icon = iconForItem(item)
+  const tone = toneForItem(item)
   return (
-    <a className="brand-result-card" href={`#/product/${item.slug}`}>
-      <div className="brand-result-card-head">
-        <span className={dealTone(item)}>{dealLabel(item)}</span>
-        <span className="brand-meta-inline">{item.offer_count} Shops</span>
+    <a className="result-card" href={`#/product/${item.slug}`}>
+      <div className="result-card-top">
+        <span className={`chip ${tone}`}><Icon size={14} /> {item.decision?.label || item.deal_label || 'Live AI'}</span>
+        <span className="muted small">{item.offer_count || 0} Shops</span>
       </div>
-      <div className="brand-result-title">{item.title}</div>
-      <div className="brand-result-meta">{item.brand || 'Schweizer Vergleich'} · {item.category || 'Produkt'} · {item.shop_name || 'Shop'}</div>
-      <div className="brand-result-footer">
+      <div className="result-card-title">{item.title}</div>
+      <div className="result-card-meta">{item.brand || 'Schweizer Vergleich'} · {item.category || 'Produkt'}</div>
+      <div className="result-card-bottom">
         <div>
-          <strong className="brand-price">{formatPrice(item.price)}</strong>
-          <div className="brand-meta-inline">Bester Preis aktuell</div>
+          <strong className="price-inline">{formatPrice(item.price)}</strong>
+          <div className="muted small">Bester Preis bei {item.shop_name || 'KI Index'}</div>
         </div>
-        <span className="brand-arrow-circle"><ArrowRight size={16} /></span>
+        <span className="arrow-circle"><ArrowRight size={16} /></span>
       </div>
     </a>
   )
 }
 
-export default function HomePageProfessional({ query, setQuery, loadingProducts, featured, products, liveSearch }) {
-  const title = query ? `Resultate für „${query}“` : 'Aktuelle Vergleiche für die Schweiz'
-
+export default function HomePageProfessional({ query, setQuery, loadingProducts, items, liveSearch, onSearch }) {
   return (
-    <main className="brand-page brand-home-page">
-      <section className="brand-hero-card">
-        <div className="brand-hero-copy">
-          <div className="brand-kicker"><Sparkles size={14} /> AI-first Preisvergleich für Schweizer Shops</div>
-          <LogoWordmark />
-          <h1 className="brand-hero-title">Die ruhigste Produktsuche für die Schweiz.</h1>
-          <p className="brand-hero-lead">
-            Klare Resultate, starke Preise und eine Oberfläche wie eine echte Suchmaschine.
-            Die KI findet Angebote, liest Produktseiten aus und führt passende Produkte sauber zusammen.
-          </p>
+    <main className="page-shell home-shell">
+      <section className="hero-panel">
+        <div className="hero-kicker">AI-first Preisvergleich für Schweizer Shops</div>
+        <BrandWordmark />
+        <h1 className="hero-title">Ruhige Suche. Echte AI Pipeline. Klare Vergleiche für die Schweiz.</h1>
+        <p className="hero-text">
+          Kauvio findet Produktseiten automatisch, liest Daten mit KI aus, merged gleiche Produkte und baut den Preisvergleich sauber auf.
+        </p>
 
-          <SearchSuggestBox
-            query={query}
-            setQuery={setQuery}
-            href="#/search"
-            placeholder="z. B. iPhone 16 Pro, Dyson V15 oder Sony WH-1000XM6"
-          />
+        <SearchSuggestBox
+          query={query}
+          setQuery={setQuery}
+          onSubmit={onSearch}
+          placeholder="z. B. iPhone 16 Pro, Dyson V15 oder Sony WH-1000XM6"
+        />
 
-          <div className="brand-chip-row">
-            <StatusChip icon={Trophy} label="Bestpreis erkannt" tone="red" />
-            <StatusChip icon={Store} label="Schweizer Shops" tone="slate" />
-            <StatusChip icon={Bot} label="Live AI Analyse" tone="blue" />
-            <StatusChip icon={BadgeSwissFranc} label="CHF direkt sichtbar" tone="slate" />
-            <StatusChip icon={ScanSearch} label="Produkt-Merge aktiv" tone="blue" />
-            <StatusChip icon={ShieldCheck} label="Klare Resultate" tone="red" />
-          </div>
+        <div className="status-row">
+          <span className="status-chip tone-red"><Trophy size={14} /> Bestpreis erkannt</span>
+          <span className="status-chip tone-slate"><Store size={14} /> Schweizer Shops</span>
+          <span className="status-chip tone-blue"><Bot size={14} /> Live AI Analyse</span>
+          <span className="status-chip tone-slate"><BadgeSwissFranc size={14} /> CHF direkt sichtbar</span>
+          <span className="status-chip tone-blue"><ScanSearch size={14} /> Produkt-Merge aktiv</span>
+          <span className="status-chip tone-red"><ShieldCheck size={14} /> Klare Resultate</span>
         </div>
       </section>
 
       {liveSearch ? (
-        <section className="brand-status-panel brand-status-panel--blue">
-          <div>
-            <div className="brand-status-label">Live AI Suche läuft</div>
-            <div className="brand-status-text">{liveSearch.userVisibleNote || 'Die KI sammelt gerade Schweizer Quellen und bereitet Resultate auf.'}</div>
-          </div>
-          <div className="brand-status-metrics">
-            <span className="brand-chip brand-chip--blue"><Search size={14} /> {liveSearch.status || 'pending'}</span>
-            <span className="brand-chip brand-chip--slate"><Bot size={14} /> {liveSearch.strategy || 'swiss_ai_live'}</span>
+        <section className="info-panel tone-panel-blue">
+          <div className="section-head">
+            <div>
+              <h2>Live-Suche läuft</h2>
+              <p className="muted no-margin">{liveSearch.userVisibleNote || 'Die KI bereitet Live-Ergebnisse aus Schweizer Quellen auf.'}</p>
+            </div>
           </div>
         </section>
       ) : null}
 
-      <section className="brand-section-panel">
-        <div className="brand-section-head">
+      <section className="results-section">
+        <div className="section-head">
           <div>
-            <h2>{title}</h2>
-            <p>Eine konsistente Markenwelt mit Blau für Suche, Rot für Schweiz und ruhigen Slate-Flächen.</p>
+            <h2>Aktuelle Vergleiche für die Schweiz</h2>
+            <p className="muted no-margin">Nur 6 Vergleiche auf der Startseite. Mehr Vorschläge erst im Suchergebnis.</p>
           </div>
         </div>
-
         {loadingProducts ? (
-          <div className="brand-empty-state">
-            <h3>Resultate werden geladen</h3>
-            <p>Die aktuellen Preis- und Shopdaten werden vorbereitet.</p>
-          </div>
-        ) : featured.length ? (
-          <div className="brand-result-grid">
-            {featured.map((item) => <HomeResultCard item={item} key={item.slug} />)}
+          <div className="empty-state"><h3>Vergleiche werden geladen</h3><p>Die aktuellen Produkt- und Shopdaten werden vorbereitet.</p></div>
+        ) : items.length ? (
+          <div className="results-grid home-results-grid">
+            {items.slice(0, 6).map((item) => <HomeResultCard key={item.slug} item={item} />)}
           </div>
         ) : (
-          <div className="brand-empty-state">
-            <h3>Keine passenden Resultate gefunden</h3>
-            <p>Versuche Begriffe wie „iPhone“, „Galaxy“, „MacBook“ oder „Dyson“.</p>
-          </div>
+          <div className="empty-state"><h3>Noch keine Vergleiche sichtbar</h3><p>Starte eine Suche, damit die AI neue Produkte findet und vergleicht.</p></div>
         )}
       </section>
-
-      <section className="brand-section-panel">
-        <div className="brand-section-head">
-          <div>
-            <h2>Weitere Angebote</h2>
-            <p>Dasselbe Designsystem gilt über Startseite, Produktseite und Admin hinweg.</p>
-          </div>
-        </div>
-
-        <div className="brand-list-grid">
-          {products.map((item) => (
-            <a className="brand-list-card" href={`#/product/${item.slug}`} key={item.slug}>
-              <div>
-                <div className="brand-list-title">{item.title}</div>
-                <div className="brand-list-meta">{item.brand || '—'} · {item.category || 'Produkt'} · {item.offer_count} Shops</div>
-              </div>
-              <div className="brand-list-side">
-                <span className={dealTone(item)}>{dealLabel(item)}</span>
-                <strong className="brand-price">{formatPrice(item.price)}</strong>
-              </div>
-            </a>
-          ))}
-        </div>
-      </section>
-
-      <footer className="brand-footer brand-footer--home">
-        <div>
-          <strong>Kauvio</strong>
-          <p>Dezentes Wortlogo, klare Farben und dieselbe Designsprache überall.</p>
-        </div>
-        <div className="brand-footer-links">
-          <a href="#/impressum">Impressum</a>
-          <a href="#/admin/login">Admin</a>
-        </div>
-      </footer>
     </main>
   )
 }

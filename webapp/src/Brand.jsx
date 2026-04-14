@@ -1,19 +1,17 @@
 import React from 'react'
 
-export function LogoWordmark({ small = false, align = 'center' }) {
-  const sizeClass = small ? 'brand-wordmark--small' : 'brand-wordmark--large'
-  const alignClass = align === 'left' ? 'brand-lockup--left' : 'brand-lockup--center'
-
+export function BrandWordmark({ small = false, align = 'center', withTagline = true }) {
+  const sizeClass = small ? 'brand-name-small' : 'brand-name-large'
   return (
-    <div className={`brand-lockup ${alignClass}`}>
-      <div className="brand-wordmark-row">
-        <span className={`brand-wordmark ${sizeClass}`}>KAUVIO</span>
-        <span className={`brand-swiss-cross ${small ? 'brand-swiss-cross--small' : ''}`} aria-hidden="true">
-          <span className="brand-swiss-cross-vertical" />
-          <span className="brand-swiss-cross-horizontal" />
+    <div className={`brand-wordmark-wrap align-${align}`}>
+      <div className="brand-wordmark-line">
+        <div className={`brand-wordmark-name ${sizeClass}`}>KAUVIO</div>
+        <span className={`brand-swiss-cross ${small ? 'brand-swiss-cross-small' : ''}`}>
+          <span className="cross-v" />
+          <span className="cross-h" />
         </span>
       </div>
-      {!small ? <div className="brand-subline">Schweiz · AI Search</div> : null}
+      {withTagline ? <div className="brand-tagline">Schweiz · AI Search</div> : null}
     </div>
   )
 }
