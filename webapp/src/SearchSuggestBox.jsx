@@ -20,7 +20,13 @@ async function fetchSuggestions(query) {
   }
 }
 
-export default function SearchSuggestBox({ query, setQuery, href = '#/search', placeholder }) {
+export default function SearchSuggestBox({
+  query,
+  setQuery,
+  onSubmit,
+  onAiSearch,
+  placeholder,
+}) {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
@@ -28,13 +34,14 @@ export default function SearchSuggestBox({ query, setQuery, href = '#/search', p
 
   useEffect(() => {
     const timer = setTimeout(async () => {
-      if (String(query || '').trim().length < 2) {
+      const value = String(query || '').trim()
+      if (value.length < 2) {
         setItems([])
         return
       }
       setLoading(true)
       try {
-        const next = await fetchSuggestions(query)
+        const next = await fetchSuggestions(value)
         setItems(next)
         setOpen(true)
       } catch {
@@ -42,7 +49,7 @@ export default function SearchSuggestBox({ query, setQuery, href = '#/search', p
       } finally {
         setLoading(false)
       }
-    }, 220)
+    }, 180)
     return () => clearTimeout(timer)
   }, [query])
 
@@ -60,66 +67,64 @@ export default function SearchSuggestBox({ query, setQuery, href = '#/search', p
     window.location.hash = `/product/${item.slug}`
   }
 
+  function submit(event) {
+    event?.preventDefault?.()
+    setOpen(false)
+    onSubmit?.(query)
+  }
+
+  function submitAi(event) {
+    event?.preventDefault?.()
+    setOpen(false)
+    onAiSearch?.(query)
+  }
+
   const showDropdown = open && (loading || items.length > 0 || String(query || '').trim().length >= 2)
 
   return (
-    <div ref={rootRef} style={{ position: 'relative', width: '100%' }}>
-      <div className="search-shell swiss-search-shell">
+    <form ref={rootRef} className="ai-search-form" onSubmit={submit}>
+      <div className="search-shell swiss-search-shell swiss-google-shell">
+        <span className="swiss-search-icon" aria-hidden="true">⌕</span>
         <input
           value={query}
           onFocus={() => { if (items.length) setOpen(true) }}
-          onChange={e => setQuery(e.target.value)}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit(e)
+          }}
           placeholder={placeholder}
         />
-        <a className="btn hero-search-btn" href={href}>Preise vergleichen</a>
+      </div>
+
+      <div className="swiss-search-actions">
+        <button className="btn swiss-search-action" type="submit">Suchen</button>
+        <button className="btn btn-ghost swiss-search-action" type="button" onClick={submitAi}>Live KI Suche</button>
       </div>
 
       {showDropdown ? (
-        <div style={{
-          position: 'absolute',
-          top: 'calc(100% + 10px)',
-          left: 0,
-          right: 0,
-          zIndex: 50,
-          background: '#ffffff',
-          border: '1px solid rgba(203, 213, 225, 0.95)',
-          borderRadius: '20px',
-          boxShadow: '0 24px 52px rgba(15, 23, 42, 0.14)',
-          overflow: 'hidden'
-        }}>
-          {loading ? <div className="muted" style={{ padding: '14px 16px' }}>Vorschläge werden geladen…</div> : null}
-          {!loading && items.length === 0 ? <div className="muted" style={{ padding: '14px 16px' }}>Keine Vorschläge gefunden.</div> : null}
+        <div className="swiss-suggest-dropdown">
+          {loading ? <div className="muted swiss-suggest-empty">Vorschläge werden geladen …</div> : null}
+          {!loading && items.length === 0 ? <div className="muted swiss-suggest-empty">Keine Vorschläge gefunden.</div> : null}
           {!loading && items.map((item, index) => (
             <button
               key={item.slug}
               type="button"
               onClick={() => selectItem(item)}
-              style={{
-                width: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '12px',
-                border: 0,
-                borderTop: index === 0 ? '0' : '1px solid rgba(226, 232, 240, 0.88)',
-                background: '#ffffff',
-                padding: '14px 16px',
-                textAlign: 'left',
-                cursor: 'pointer'
-              }}
+              className="swiss-suggest-item"
+              style={{ borderTop: index === 0 ? '0' : undefined }}
             >
               <div>
-                <div style={{ fontWeight: 800 }}>{item.title}</div>
+                <div className="swiss-suggest-title">{item.title}</div>
                 <div className="muted small">{item.brand || '—'} · {item.shop_name || 'Shop'} · {item.offer_count} Anbieter</div>
               </div>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontWeight: 800 }}>{formatPrice(item.price)}</div>
+              <div className="swiss-suggest-side">
+                <div>{formatPrice(item.price)}</div>
                 <div className="muted small">{item.decision?.label || 'Vorschlag'}</div>
               </div>
             </button>
           ))}
         </div>
       ) : null}
-    </div>
+    </form>
   )
 }
