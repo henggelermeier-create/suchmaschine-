@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { Search, Sparkles } from 'lucide-react'
 
 const formatPrice = (value) => value != null ? `CHF ${Number(value).toFixed(2)}` : '—'
 
@@ -20,13 +21,7 @@ async function fetchSuggestions(query) {
   }
 }
 
-export default function SearchSuggestBox({
-  query,
-  setQuery,
-  onSubmit,
-  onAiSearch,
-  placeholder,
-}) {
+export default function SearchSuggestBox({ query, setQuery, href = '#/search', placeholder }) {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
@@ -34,14 +29,13 @@ export default function SearchSuggestBox({
 
   useEffect(() => {
     const timer = setTimeout(async () => {
-      const value = String(query || '').trim()
-      if (value.length < 2) {
+      if (String(query || '').trim().length < 2) {
         setItems([])
         return
       }
       setLoading(true)
       try {
-        const next = await fetchSuggestions(value)
+        const next = await fetchSuggestions(query)
         setItems(next)
         setOpen(true)
       } catch {
@@ -49,7 +43,7 @@ export default function SearchSuggestBox({
       } finally {
         setLoading(false)
       }
-    }, 180)
+    }, 220)
     return () => clearTimeout(timer)
   }, [query])
 
@@ -67,64 +61,55 @@ export default function SearchSuggestBox({
     window.location.hash = `/product/${item.slug}`
   }
 
-  function submit(event) {
-    event?.preventDefault?.()
-    setOpen(false)
-    onSubmit?.(query)
-  }
-
-  function submitAi(event) {
-    event?.preventDefault?.()
-    setOpen(false)
-    onAiSearch?.(query)
-  }
-
   const showDropdown = open && (loading || items.length > 0 || String(query || '').trim().length >= 2)
 
   return (
-    <form ref={rootRef} className="ai-search-form" onSubmit={submit}>
-      <div className="search-shell swiss-search-shell swiss-google-shell">
-        <span className="swiss-search-icon" aria-hidden="true">⌕</span>
-        <input
-          value={query}
-          onFocus={() => { if (items.length) setOpen(true) }}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') submit(e)
-          }}
-          placeholder={placeholder}
-        />
-      </div>
-
-      <div className="swiss-search-actions">
-        <button className="btn swiss-search-action" type="submit">Suchen</button>
-        <button className="btn btn-ghost swiss-search-action" type="button" onClick={submitAi}>Live KI Suche</button>
+    <div ref={rootRef} className="search-suggest-root">
+      <div className="brand-search-shell">
+        <div className="brand-search-inputwrap">
+          <Search className="brand-search-icon" />
+          <input
+            value={query}
+            onFocus={() => { if (items.length) setOpen(true) }}
+            onChange={e => setQuery(e.target.value)}
+            placeholder={placeholder}
+            className="brand-search-input"
+          />
+        </div>
+        <a className="brand-primary-button" href={href}>
+          Preise vergleichen
+        </a>
       </div>
 
       {showDropdown ? (
-        <div className="swiss-suggest-dropdown">
-          {loading ? <div className="muted swiss-suggest-empty">Vorschläge werden geladen …</div> : null}
-          {!loading && items.length === 0 ? <div className="muted swiss-suggest-empty">Keine Vorschläge gefunden.</div> : null}
+        <div className="brand-suggest-dropdown">
+          {loading ? <div className="brand-suggest-state">Vorschläge werden geladen…</div> : null}
+          {!loading && items.length === 0 ? <div className="brand-suggest-state">Keine Vorschläge gefunden.</div> : null}
           {!loading && items.map((item, index) => (
             <button
               key={item.slug}
               type="button"
               onClick={() => selectItem(item)}
-              className="swiss-suggest-item"
-              style={{ borderTop: index === 0 ? '0' : undefined }}
+              className={`brand-suggest-item ${index === 0 ? 'brand-suggest-item--first' : ''}`}
             >
-              <div>
-                <div className="swiss-suggest-title">{item.title}</div>
-                <div className="muted small">{item.brand || '—'} · {item.shop_name || 'Shop'} · {item.offer_count} Anbieter</div>
+              <div className="brand-suggest-copy">
+                <div className="brand-suggest-title">{item.title}</div>
+                <div className="brand-suggest-meta">
+                  <span>{item.brand || '—'}</span>
+                  <span>·</span>
+                  <span>{item.shop_name || 'Shop'}</span>
+                  <span>·</span>
+                  <span>{item.offer_count} Anbieter</span>
+                </div>
               </div>
-              <div className="swiss-suggest-side">
-                <div>{formatPrice(item.price)}</div>
-                <div className="muted small">{item.decision?.label || 'Vorschlag'}</div>
+              <div className="brand-suggest-side">
+                <div className="brand-suggest-price">{formatPrice(item.price)}</div>
+                <div className="brand-suggest-pill"><Sparkles size={13} /> {item.decision?.label || 'Vorschlag'}</div>
               </div>
             </button>
           ))}
         </div>
       ) : null}
-    </form>
+    </div>
   )
 }

@@ -1,4 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Activity,
+  ArrowRight,
+  BadgeSwissFranc,
+  BarChart3,
+  Bot,
+  Database,
+  Search,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  Store,
+  Trophy,
+  ScanSearch,
+} from 'lucide-react'
+import { LogoWordmark } from './Brand.jsx'
 
 const ADMIN_TOKEN_KEY = 'kauvio_admin_token'
 
@@ -46,11 +63,11 @@ async function api(url, options = {}) {
 }
 
 function formatPrice(value) {
-  return value != null ? `CHF ${Number(value).toFixed(2)}` : '-'
+  return value != null ? `CHF ${Number(value).toFixed(2)}` : '—'
 }
 
 function formatDate(value) {
-  if (!value) return '-'
+  if (!value) return '—'
   try {
     return new Date(value).toLocaleString('de-CH')
   } catch {
@@ -70,50 +87,62 @@ function parseJson(value, fallback = {}) {
   return fallback
 }
 
-function Header() {
+function BrandHeader({ admin = false }) {
   return (
-    <header className="topbar topbar-pro">
-      <a className="brandlink" href="#/">
-        <div className="brand brand-modern">
-          <div className="brand-wordmark">
-            <span className="brand-dot" />
-            <span className="brand-name">
-              KAUVIO<span className="brand-point">.</span>
-            </span>
-          </div>
-        </div>
+    <header className="brand-topbar">
+      <a className="brand-topbar-logo" href="#/">
+        <LogoWordmark small align="left" />
       </a>
+      <div className="brand-topbar-actions">
+        <span className={`brand-chip ${admin ? 'brand-chip--red' : 'brand-chip--blue'}`}>
+          {admin ? <Settings2 size={14} /> : <Sparkles size={14} />}
+          {admin ? 'Admin' : 'AI Search'}
+        </span>
+      </div>
     </header>
   )
 }
 
-function Stat({ title, value }) {
+function StatusChip({ icon: Icon, label, tone = 'slate' }) {
   return (
-    <div className="stat-card">
-      <div className="muted">{title}</div>
-      <strong>{value}</strong>
-    </div>
+    <span className={`brand-chip brand-chip--${tone}`}>
+      <Icon size={14} />
+      <span>{label}</span>
+    </span>
   )
 }
 
 function SearchCard({ item }) {
   const href = `#/product/${item.slug}`
   return (
-    <a className="result-card-pro" href={href}>
-      <div className="result-card-copy">
-        <div className="result-card-title">{item.title}</div>
-        <div className="result-card-meta">
-          {item.brand || '-'} · {item.category || 'Produkt'} · {item.offer_count || 0} Shops
-        </div>
-        <div className="result-card-submeta">
-          Bestpreis · {formatPrice(item.price)}{item.shop_name ? ` · ${item.shop_name}` : ''}
+    <a className="brand-list-card" href={href}>
+      <div>
+        <div className="brand-list-title">{item.title}</div>
+        <div className="brand-list-meta">
+          {item.brand || '—'} · {item.category || 'Produkt'} · {item.offer_count || 0} Shops
         </div>
       </div>
-      <div className="result-card-side">
-        <span className="result-pill">{item.deal_label || item.decision?.label || 'KI Vergleich'}</span>
-        <strong className="price-inline">{formatPrice(item.price)}</strong>
+      <div className="brand-list-side">
+        <span className={`brand-pill ${Number(item.deal_score || 0) >= 88 ? 'brand-pill--red' : 'brand-pill--blue'}`}>
+          {item.deal_label || item.decision?.label || 'KI Vergleich'}
+        </span>
+        <strong className="brand-price">{formatPrice(item.price)}</strong>
       </div>
     </a>
+  )
+}
+
+function AdminStat({ title, value, icon: Icon, tone = 'slate' }) {
+  return (
+    <div className="brand-admin-stat">
+      <div>
+        <div className="brand-admin-stat-label">{title}</div>
+        <strong className="brand-admin-stat-value">{value}</strong>
+      </div>
+      <div className={`brand-admin-stat-icon brand-admin-stat-icon--${tone}`}>
+        <Icon size={18} />
+      </div>
+    </div>
   )
 }
 
@@ -130,15 +159,13 @@ function deriveEngineStatus(dashboard, aiControls, searchTasks, systemHealth) {
   const pendingTasks = (searchTasks || []).filter((item) => item.status === 'pending').length
   const currentProducts = Number(systemHealth?.checks?.canonical_products?.count || 0)
   const targetProducts = Number(autonomousJson.target_canonical_products || engineJson.target_products || 0)
-  const progressPercent = targetProducts > 0 ? Math.min(100, Math.round((currentProducts / targetProducts) * 100)) : null
 
-  let label = 'KI Status unbekannt'
+  let label = 'KI ist aktiviert'
   if (!engineRuntime) label = 'KI Status unbekannt'
   else if (engineRuntime.is_enabled === false || mode === 'stop') label = 'KI steht'
   else if (mode === 'pause') label = 'KI pausiert'
-  else if (runningTasks > 0) label = 'KI laeuft'
-  else if (pendingTasks > 0) label = 'KI ist aktiv und hat Warteschlange'
-  else label = 'KI ist aktiviert'
+  else if (runningTasks > 0) label = 'KI läuft'
+  else if (pendingTasks > 0) label = 'KI arbeitet an Warteschlange'
 
   return {
     label,
@@ -147,7 +174,6 @@ function deriveEngineStatus(dashboard, aiControls, searchTasks, systemHealth) {
     pendingTasks,
     currentProducts,
     targetProducts,
-    progressPercent,
   }
 }
 
@@ -228,7 +254,7 @@ export default function App() {
           pollRef.current = null
         }
       } catch {
-        setPollMessage('Live Suche laeuft weiter ...')
+        setPollMessage('Live Suche läuft weiter ...')
       }
     }, 8000)
     return () => {
@@ -241,7 +267,6 @@ export default function App() {
     () => deriveEngineStatus(dashboard, aiControls, searchTasks, systemHealth),
     [dashboard, aiControls, searchTasks, systemHealth]
   )
-  const adminMessageIsError = /fehler|failed|ungueltig|nicht/i.test(adminMessage || '')
   const activeRequests = useMemo(() => {
     if ((searchRequests || []).length) return searchRequests.slice(0, 6)
     return (searchTasks || [])
@@ -426,27 +451,22 @@ export default function App() {
 
   if (route === '/admin/login') {
     return (
-      <div className="shell center gradient-bg">
-        <div className="login-card login-card-pro">
-          <div className="brand-row">
-            <div className="logo">K</div>
-            <div>
-              <div className="brand-name dark">KAUVIO</div>
-              <div className="muted">AI first Admin</div>
-            </div>
-          </div>
-          <h1 className="login-title">Admin Login</h1>
-          <form className="stack" onSubmit={loginAdmin}>
-            <label className="field">
-              <span>E Mail</span>
+      <div className="brand-auth-shell">
+        <div className="brand-auth-card">
+          <LogoWordmark align="left" />
+          <h1 className="brand-auth-title">Admin Login</h1>
+          <p className="brand-auth-text">Dieselbe Markenwelt wie im Frontend: ruhig, klar und fokussiert.</p>
+          <form className="brand-form-stack" onSubmit={loginAdmin}>
+            <label className="brand-field">
+              <span>E-Mail</span>
               <input value={login.email} onChange={(e) => setLogin({ ...login, email: e.target.value })} />
             </label>
-            <label className="field">
+            <label className="brand-field">
               <span>Passwort</span>
               <input type="password" value={login.password} onChange={(e) => setLogin({ ...login, password: e.target.value })} />
             </label>
-            {loginError ? <div className="error-box">{loginError}</div> : null}
-            <button className="btn btn-xl">Einloggen</button>
+            {loginError ? <div className="brand-error-box">{loginError}</div> : null}
+            <button className="brand-primary-button brand-primary-button--full">Einloggen</button>
           </form>
         </div>
       </div>
@@ -454,96 +474,77 @@ export default function App() {
   }
 
   if (route === '/admin') {
-    const aiProducts = systemHealth?.checks?.canonical_products?.count ?? dashboard?.stats?.products ?? '-'
-    const aiOffers = systemHealth?.checks?.source_offers_v2?.count ?? dashboard?.stats?.offers ?? '-'
+    const aiProducts = systemHealth?.checks?.canonical_products?.count ?? dashboard?.stats?.products ?? '—'
+    const aiOffers = systemHealth?.checks?.source_offers_v2?.count ?? dashboard?.stats?.offers ?? '—'
 
     return (
-      <div className="shell">
-        <Header />
-        <main className="content admin-content admin-final-layout">
-          <section className="hero admin-hero panel hero-banner admin-banner">
+      <div className="brand-app-shell">
+        <BrandHeader admin />
+        <main className="brand-admin-page">
+          <section className="brand-admin-hero">
             <div>
-              <div className="badge">AI first Kern</div>
-              <h1 className="section-title">Kauvio Admin</h1>
-              <p className="section-text">Suchstart, Discovery, Warteliste und Schweizer Quellen an einem Ort.</p>
+              <div className="brand-kicker brand-kicker--red"><Settings2 size={14} /> Admin · Go Live</div>
+              <h1>Ein Designsystem für Frontend und Admin.</h1>
+              <p>Blau für Suche und AI, Rot für Schweiz und Trust, Slate für Ruhe und Lesbarkeit.</p>
             </div>
-            <div className="row gap-sm wrap">
-              <button className="btn btn-small btn-ghost" onClick={refreshAdminData}>Neu laden</button>
-              <button className="btn btn-small btn-ghost" onClick={logoutAdmin}>Abmelden</button>
-            </div>
-          </section>
-
-          {adminMessage ? (
-            <section className={`panel ${adminMessageIsError ? 'status-error' : 'status-success'}`}>
-              <p className="no-margin">{adminMessage}</p>
-            </section>
-          ) : null}
-          {adminLoading ? (
-            <section className="panel">
-              <p className="muted no-margin">Admin Daten werden geladen ...</p>
-            </section>
-          ) : null}
-
-          <section className="panel">
-            <div className="section-head">
-              <div>
-                <h2>KI Engine Status</h2>
-                <p className="muted no-margin">Sichtbar, ob die KI wirklich arbeitet.</p>
-              </div>
-            </div>
-            <div className="stats-grid stats-grid-6">
-              <Stat title="Status" value={engineStatus.label || '-'} />
-              <Stat title="Modus" value={engineStatus.mode || '-'} />
-              <Stat title="Laufende Jobs" value={engineStatus.runningTasks ?? engineStatus.runningTasks ?? engineStatus.running ?? 0} />
-              <Stat title="Wartende Jobs" value={engineStatus.pendingTasks ?? engineStatus.pending ?? 0} />
-              <Stat title="Aktuelle KI Produkte" value={engineStatus.currentProducts ?? aiProducts} />
-              <Stat title="Zielmenge" value={engineStatus.targetProducts || '-'} />
+            <div className="brand-admin-hero-actions">
+              <button className="brand-secondary-button" onClick={refreshAdminData}>Neu laden</button>
+              <button className="brand-secondary-button" onClick={logoutAdmin}>Abmelden</button>
             </div>
           </section>
 
-          <section className="stats-grid stats-grid-6 admin-kpi-grid">
-            <Stat title="KI Produkte" value={aiProducts} />
-            <Stat title="KI Offers" value={aiOffers} />
-            <Stat title="Suchjobs" value={dashboard?.stats?.searchTasks ?? '-'} />
-            <Stat title="Open Web" value={dashboard?.stats?.openWebPages ?? '-'} />
-            <Stat title="Seeds" value={dashboard?.stats?.autonomousSeeds ?? '-'} />
-            <Stat title="Gelernt" value={dashboard?.stats?.learnedQueries ?? '-'} />
+          {adminMessage ? <section className="brand-inline-message">{adminMessage}</section> : null}
+          {adminLoading ? <section className="brand-inline-muted">Admin Daten werden geladen ...</section> : null}
+
+          <section className="brand-admin-stats-grid">
+            <AdminStat title="Status" value={engineStatus.label || '—'} icon={Activity} tone="blue" />
+            <AdminStat title="KI Produkte" value={aiProducts} icon={Database} tone="slate" />
+            <AdminStat title="KI Offers" value={aiOffers} icon={Bot} tone="blue" />
+            <AdminStat title="Suchjobs" value={dashboard?.stats?.searchTasks ?? '—'} icon={Search} tone="red" />
+            <AdminStat title="Open Web" value={dashboard?.stats?.openWebPages ?? '—'} icon={ScanSearch} tone="blue" />
+            <AdminStat title="Schweizer Quellen" value={dashboard?.stats?.autonomousSeeds ?? '—'} icon={Store} tone="red" />
           </section>
 
-          <section className="panel">
-            <div className="section-head">
+          <section className="brand-section-panel">
+            <div className="brand-section-head">
               <div>
                 <h2>KI Suche starten</h2>
-                <p className="muted no-margin">Direkter Live Start fuer neue Produktsuche.</p>
+                <p>Dieselbe Button- und Flächensprache wie auf der Startseite.</p>
               </div>
             </div>
-            <div className="row gap-sm wrap">
-              <input value={aiSearchQuery} onChange={(e) => setAiSearchQuery(e.target.value)} placeholder="z. B. iPhone 16 Pro 256 GB" />
-              <button className="btn btn-small" onClick={startAdminAiSearch}>KI Suche starten</button>
+            <div className="brand-admin-searchbar">
+              <div className="brand-search-inputwrap brand-search-inputwrap--flat">
+                <Search className="brand-search-icon" />
+                <input value={aiSearchQuery} onChange={(e) => setAiSearchQuery(e.target.value)} placeholder="z. B. iPhone 16 Pro 256 GB" />
+              </div>
+              <button className="brand-primary-button" onClick={startAdminAiSearch}>KI Suche starten</button>
             </div>
           </section>
 
-          <div className="admin-grid admin-grid-main">
-            <section className="panel">
-              <div className="section-head">
+          <section className="brand-admin-grid brand-admin-grid--two">
+            <div className="brand-section-panel">
+              <div className="brand-section-head">
                 <div>
-                  <h2>KI Controls</h2>
-                  <p className="muted no-margin">Zentrale Schalter fuer Engine und Discovery.</p>
+                  <h2>AI Controls</h2>
+                  <p>Gemeinsame Farblogik und identische Komponenten.</p>
                 </div>
+                <SlidersHorizontal size={18} className="brand-muted-icon" />
               </div>
-              <div className="stack">
+              <div className="brand-stack-list">
                 {aiControls
                   .filter((control) => ['engine_runtime', 'open_web_discovery', 'small_shop_balance', 'autonomous_builder'].includes(control.control_key))
                   .map((control) => (
-                    <div className="offer-edit-card" key={control.control_key}>
-                      <div className="row line no-border">
+                    <div className="brand-control-card" key={control.control_key}>
+                      <div className="brand-control-head">
                         <div>
                           <strong>{control.control_key}</strong>
-                          <div className="muted">{control.description || '-'}</div>
+                          <div className="brand-meta-inline">{control.description || 'AI Control'}</div>
                         </div>
-                        <div className="muted">{formatDate(control.updated_at)}</div>
+                        <span className={`brand-pill ${control.is_enabled ? 'brand-pill--blue' : 'brand-pill--slate'}`}>
+                          {control.is_enabled ? 'Aktiv' : 'Inaktiv'}
+                        </span>
                       </div>
-                      <label className="field">
+                      <label className="brand-field brand-field--checkbox">
                         <span>Aktiv</span>
                         <input
                           type="checkbox"
@@ -559,7 +560,7 @@ export default function App() {
                           }
                         />
                       </label>
-                      <label className="field">
+                      <label className="brand-field">
                         <span>JSON</span>
                         <textarea
                           rows="4"
@@ -575,156 +576,170 @@ export default function App() {
                           }
                         />
                       </label>
-                      <button className="btn btn-small" onClick={() => saveAiControl(control.control_key)}>Speichern</button>
+                      <button className="brand-secondary-button brand-secondary-button--left" onClick={() => saveAiControl(control.control_key)}>Speichern</button>
                     </div>
                   ))}
               </div>
-            </section>
+            </div>
 
-            <section className="panel">
-              <div className="section-head">
+            <div className="brand-section-panel">
+              <div className="brand-section-head">
                 <div>
                   <h2>Warteliste und Discovery</h2>
-                  <p className="muted no-margin">Was gerade gesucht wird und was die KI findet.</p>
+                  <p>Admin und Frontend wirken wie aus einem Guss.</p>
                 </div>
+                <Bot size={18} className="brand-muted-icon" />
               </div>
-              <div className="stack">
-                <div className="subpanel light-panel">
-                  <strong>Suchanfragen</strong>
-                  <div className="stack mt-16">
+              <div className="brand-stack-list">
+                <div className="brand-subcard">
+                  <strong>Offene Suchanfragen</strong>
+                  <div className="brand-sublist">
                     {activeRequests.length ? activeRequests.map((item) => (
-                      <div className="row line" key={item.id}>
+                      <div className="brand-subrow" key={item.id}>
                         <div>
                           <strong>{item.query}</strong>
-                          <div className="muted">{item.status}</div>
+                          <div className="brand-meta-inline">{item.status}</div>
                         </div>
-                        <div className="muted">{item.result_count || 0} Resultate</div>
+                        <span className="brand-pill brand-pill--blue">{item.result_count || 0} Resultate</span>
                       </div>
-                    )) : <div className="muted" style={{ marginTop: 12 }}>Keine offenen Suchanfragen sichtbar.</div>}
+                    )) : <div className="brand-meta-inline">Keine offenen Suchanfragen sichtbar.</div>}
                   </div>
                 </div>
-                <div className="subpanel light-panel">
+                <div className="brand-subcard">
                   <strong>Open Web Treffer</strong>
-                  <div className="stack mt-16">
+                  <div className="brand-sublist">
                     {webDiscoveryResults.length ? webDiscoveryResults.slice(0, 6).map((item) => (
-                      <div className="row line" key={item.id}>
+                      <div className="brand-subrow" key={item.id}>
                         <div>
                           <strong>{item.result_title || item.source_domain || 'Treffer'}</strong>
-                          <div className="muted">{item.source_domain || '-'}</div>
+                          <div className="brand-meta-inline">{item.source_domain || '—'}</div>
                         </div>
-                        <div className="muted">{item.discovered_product ? 'Produkt' : item.discovered_shop ? 'Shop' : 'Treffer'}</div>
+                        <span className={`brand-pill ${item.discovered_product ? 'brand-pill--red' : 'brand-pill--slate'}`}>
+                          {item.discovered_product ? 'Produkt' : item.discovered_shop ? 'Shop' : 'Treffer'}
+                        </span>
                       </div>
-                    )) : <div className="muted" style={{ marginTop: 12 }}>Noch keine Open Web Treffer sichtbar.</div>}
+                    )) : <div className="brand-meta-inline">Noch keine Open Web Treffer sichtbar.</div>}
                   </div>
                 </div>
               </div>
-            </section>
-          </div>
-
-          <section className="panel">
-            <div className="section-head">
-              <div>
-                <h2>Schweizer Quellen</h2>
-                <p className="muted no-margin">Wichtige Quellen mit Schnellsteuerung.</p>
-              </div>
-            </div>
-            <div className="stack">
-              {swissSources.slice(0, 10).map((source) => (
-                <div className="offer-edit-card" key={source.source_key}>
-                  <div className="row line no-border">
-                    <div>
-                      <strong>{source.display_name}</strong>
-                      <div className="muted">{source.source_key}{source.shop_domain ? ` · ${source.shop_domain}` : ''}</div>
-                    </div>
-                    <div className="muted">{source.last_runtime_status || 'kein Status'}</div>
-                  </div>
-                  <div className="grid two-col">
-                    <label className="field">
-                      <span>Prioritaet</span>
-                      <input
-                        value={swissSourceEditor[source.source_key]?.priority ?? ''}
-                        onChange={(e) =>
-                          setSwissSourceEditor({
-                            ...swissSourceEditor,
-                            [source.source_key]: {
-                              ...swissSourceEditor[source.source_key],
-                              priority: Number(e.target.value),
-                            },
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field">
-                      <span>Boost</span>
-                      <input
-                        value={swissSourceEditor[source.source_key]?.manual_boost ?? ''}
-                        onChange={(e) =>
-                          setSwissSourceEditor({
-                            ...swissSourceEditor,
-                            [source.source_key]: {
-                              ...swissSourceEditor[source.source_key],
-                              manual_boost: Number(e.target.value),
-                            },
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field">
-                      <span>Kleiner Shop</span>
-                      <input
-                        type="checkbox"
-                        checked={!!swissSourceEditor[source.source_key]?.is_small_shop}
-                        onChange={(e) =>
-                          setSwissSourceEditor({
-                            ...swissSourceEditor,
-                            [source.source_key]: {
-                              ...swissSourceEditor[source.source_key],
-                              is_small_shop: e.target.checked,
-                            },
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field">
-                      <span>Aktiv</span>
-                      <input
-                        type="checkbox"
-                        checked={!!swissSourceEditor[source.source_key]?.is_active}
-                        onChange={(e) =>
-                          setSwissSourceEditor({
-                            ...swissSourceEditor,
-                            [source.source_key]: {
-                              ...swissSourceEditor[source.source_key],
-                              is_active: e.target.checked,
-                            },
-                          })
-                        }
-                      />
-                    </label>
-                  </div>
-                  <button className="btn btn-small" onClick={() => saveSwissSource(source.source_key)}>Quelle speichern</button>
-                </div>
-              ))}
             </div>
           </section>
 
-          <section className="panel">
-            <div className="section-head">
-              <div>
-                <h2>Letzte Suchjobs</h2>
-                <p className="muted no-margin">Direkt sehen, ob Imports laufen oder scheitern.</p>
+          <section className="brand-admin-grid brand-admin-grid--two">
+            <div className="brand-section-panel">
+              <div className="brand-section-head">
+                <div>
+                  <h2>Schweizer Quellen</h2>
+                  <p>Rote Akzente für Schweiz, blaue für aktive Suche.</p>
+                </div>
+                <Store size={18} className="brand-muted-icon" />
+              </div>
+              <div className="brand-stack-list">
+                {swissSources.slice(0, 10).map((source) => (
+                  <div className="brand-control-card" key={source.source_key}>
+                    <div className="brand-control-head">
+                      <div>
+                        <strong>{source.display_name}</strong>
+                        <div className="brand-meta-inline">{source.source_key}{source.shop_domain ? ` · ${source.shop_domain}` : ''}</div>
+                      </div>
+                      <span className={`brand-pill ${source.is_active ? 'brand-pill--red' : 'brand-pill--slate'}`}>
+                        {source.last_runtime_status || 'kein Status'}
+                      </span>
+                    </div>
+                    <div className="brand-two-col-grid">
+                      <label className="brand-field">
+                        <span>Priorität</span>
+                        <input
+                          value={swissSourceEditor[source.source_key]?.priority ?? ''}
+                          onChange={(e) =>
+                            setSwissSourceEditor({
+                              ...swissSourceEditor,
+                              [source.source_key]: {
+                                ...swissSourceEditor[source.source_key],
+                                priority: Number(e.target.value),
+                              },
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="brand-field">
+                        <span>Boost</span>
+                        <input
+                          value={swissSourceEditor[source.source_key]?.manual_boost ?? ''}
+                          onChange={(e) =>
+                            setSwissSourceEditor({
+                              ...swissSourceEditor,
+                              [source.source_key]: {
+                                ...swissSourceEditor[source.source_key],
+                                manual_boost: Number(e.target.value),
+                              },
+                            })
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div className="brand-inline-controls">
+                      <label className="brand-field brand-field--checkbox-inline">
+                        <input
+                          type="checkbox"
+                          checked={!!swissSourceEditor[source.source_key]?.is_small_shop}
+                          onChange={(e) =>
+                            setSwissSourceEditor({
+                              ...swissSourceEditor,
+                              [source.source_key]: {
+                                ...swissSourceEditor[source.source_key],
+                                is_small_shop: e.target.checked,
+                              },
+                            })
+                          }
+                        />
+                        <span>Kleiner Shop</span>
+                      </label>
+                      <label className="brand-field brand-field--checkbox-inline">
+                        <input
+                          type="checkbox"
+                          checked={!!swissSourceEditor[source.source_key]?.is_active}
+                          onChange={(e) =>
+                            setSwissSourceEditor({
+                              ...swissSourceEditor,
+                              [source.source_key]: {
+                                ...swissSourceEditor[source.source_key],
+                                is_active: e.target.checked,
+                              },
+                            })
+                          }
+                        />
+                        <span>Aktiv</span>
+                      </label>
+                    </div>
+                    <button className="brand-secondary-button brand-secondary-button--left" onClick={() => saveSwissSource(source.source_key)}>Quelle speichern</button>
+                  </div>
+                ))}
               </div>
             </div>
-            <div className="stack">
-              {searchTasks.length ? searchTasks.slice(0, 8).map((task) => (
-                <div className="row line" key={task.id}>
-                  <div>
-                    <strong>{task.query}</strong>
-                    <div className="muted">{task.status} · {task.strategy}</div>
-                  </div>
-                  <div className="muted">{task.imported_count || 0} Imports · {task.discovered_count || 0} Discovery</div>
+
+            <div className="brand-section-panel">
+              <div className="brand-section-head">
+                <div>
+                  <h2>Letzte Suchjobs</h2>
+                  <p>Dasselbe Kartenraster wie im Frontend.</p>
                 </div>
-              )) : <div className="muted">Noch keine Suchjobs sichtbar.</div>}
+                <Activity size={18} className="brand-muted-icon" />
+              </div>
+              <div className="brand-stack-list">
+                {searchTasks.length ? searchTasks.slice(0, 8).map((task) => (
+                  <div className="brand-subrow brand-subrow--card" key={task.id}>
+                    <div>
+                      <strong>{task.query}</strong>
+                      <div className="brand-meta-inline">{task.status} · {task.strategy}</div>
+                    </div>
+                    <div className="brand-stack-inline-right">
+                      <span className="brand-pill brand-pill--blue">{task.imported_count || 0} Imports</span>
+                      <span className="brand-pill brand-pill--slate">{task.discovered_count || 0} Discovery</span>
+                    </div>
+                  </div>
+                )) : <div className="brand-meta-inline">Noch keine Suchjobs sichtbar.</div>}
+              </div>
             </div>
           </section>
         </main>
@@ -734,36 +749,39 @@ export default function App() {
 
   if (selected && route.startsWith('/product/')) {
     return (
-      <div className="shell">
-        <Header />
-        <main className="content product-page">
-          <section className="panel product-hero-panel">
-            <div className="badge">{selected.deal_label || selected.decision?.label || 'KI Vergleich'}</div>
-            <h1 className="product-title">{selected.title}</h1>
-            <p className="product-copy">{selected.ai_summary || 'KI aufbereiteter Produktvergleich fuer die Schweiz.'}</p>
-            <div className="detail-list">
-              <div><span>Marke</span><strong>{selected.brand || '-'}</strong></div>
-              <div><span>Kategorie</span><strong>{selected.category || '-'}</strong></div>
-              <div><span>Bestpreis</span><strong>{formatPrice(selected.price)}</strong></div>
+      <div className="brand-app-shell">
+        <BrandHeader />
+        <main className="brand-product-page">
+          <section className="brand-product-hero">
+            <div className="brand-kicker"><Sparkles size={14} /> KI Vergleich</div>
+            <h1>{selected.title}</h1>
+            <p>{selected.ai_summary || 'KI aufbereiteter Produktvergleich für die Schweiz.'}</p>
+            <div className="brand-chip-row">
+              <StatusChip icon={Trophy} label={selected.deal_label || selected.decision?.label || 'KI Vergleich'} tone="red" />
+              <StatusChip icon={Store} label={selected.shop_name || 'Schweizer Shop'} tone="slate" />
+              <StatusChip icon={BadgeSwissFranc} label={formatPrice(selected.price)} tone="blue" />
             </div>
           </section>
-          <section className="panel comparison-panel">
-            <div className="section-head">
+
+          <section className="brand-section-panel">
+            <div className="brand-section-head">
               <div>
                 <h2>Preisvergleich</h2>
-                <p className="muted no-margin">Bestpreis und alle Shops mit Direktlink.</p>
+                <p>Gleiches Designsystem wie Startseite und Admin.</p>
               </div>
             </div>
-            <div className="offers-table">
+            <div className="brand-offers-table">
               {(selected.offers || []).map((offer, index) => (
-                <div className={`offer-row ${index === 0 ? 'offer-row-best' : ''}`} key={`${offer.shop_name}-${index}`}>
-                  <div className="offer-shop">
+                <div className={`brand-offer-row ${index === 0 ? 'brand-offer-row--best' : ''}`} key={`${offer.shop_name}-${index}`}>
+                  <div>
                     <strong>{offer.shop_name}</strong>
-                    <div className="muted">Zuletzt aktualisiert: {formatDate(offer.updated_at)}</div>
+                    <div className="brand-meta-inline">Zuletzt aktualisiert: {formatDate(offer.updated_at)}</div>
                   </div>
-                  <div className="offer-row-right">
-                    <strong className="offer-price">{formatPrice(offer.price)}</strong>
-                    <a className="btn btn-small" href={`/r/${selected.slug}/${encodeURIComponent(offer.shop_name)}`} target="_blank" rel="noreferrer">Zum Shop</a>
+                  <div className="brand-offer-right">
+                    <strong className="brand-price">{formatPrice(offer.price)}</strong>
+                    <a className="brand-primary-button brand-primary-button--compact" href={`/r/${selected.slug}/${encodeURIComponent(offer.shop_name)}`} target="_blank" rel="noreferrer">
+                      Zum Shop
+                    </a>
                   </div>
                 </div>
               ))}
@@ -775,80 +793,78 @@ export default function App() {
   }
 
   return (
-    <div className="shell">
-      <Header />
-      <main className="content home-content">
-        <section className="panel home-simple">
-          <div className="home-logo">KAUVIO<span className="brand-point">.</span></div>
-          <p className="home-subtitle">AI first Produktsuche Schweiz</p>
-          <h1 className="home-title">Die KI findet, priorisiert und vergleicht Schweizer Produkte.</h1>
-          <p className="home-lead">Suche direkt im Index oder starte bei Bedarf sofort eine Live KI Suche ueber Schweizer Quellen.</p>
-          <div className="search-shell hero-search home-search-centered">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') runSearch(query)
-              }}
-              placeholder="z. B. iPhone 16 Pro, Dyson V15 oder Sony WH 1000XM6"
-            />
-            <button className="btn hero-search-btn" onClick={() => runSearch(query)}>Suchen</button>
+    <div className="brand-app-shell">
+      <BrandHeader />
+      <main className="brand-page">
+        <section className="brand-hero-card brand-hero-card--compact">
+          <LogoWordmark />
+          <h1 className="brand-hero-title">AI-first Produktsuche für die Schweiz.</h1>
+          <p className="brand-hero-lead">Dasselbe ruhige Design wie auf der Startseite – auch auf internen Seiten und Fallback-Ansichten.</p>
+          <div className="brand-search-shell brand-search-shell--standalone">
+            <div className="brand-search-inputwrap">
+              <Search className="brand-search-icon" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') runSearch(query) }}
+                placeholder="z. B. iPhone 16 Pro, Dyson V15 oder Sony WH-1000XM6"
+                className="brand-search-input"
+              />
+            </div>
+            <button className="brand-primary-button" onClick={() => runSearch(query)}>Suchen</button>
+          </div>
+          <div className="brand-chip-row">
+            <StatusChip icon={Trophy} label="Bestpreis" tone="red" />
+            <StatusChip icon={Bot} label="Live AI" tone="blue" />
+            <StatusChip icon={Store} label="Schweizer Shops" tone="slate" />
           </div>
         </section>
 
         {liveSearch ? (
-          <section className="panel">
-            <div className="section-head">
-              <div>
-                <h2>KI Suche laeuft</h2>
-                <p className="muted no-margin">{liveSearch.userVisibleNote || 'Die KI sammelt gerade Schweizer Quellen.'}</p>
-              </div>
+          <section className="brand-status-panel brand-status-panel--blue">
+            <div>
+              <div className="brand-status-label">KI Suche läuft</div>
+              <div className="brand-status-text">{liveSearch.userVisibleNote || 'Die KI sammelt gerade Schweizer Quellen.'}</div>
             </div>
-            <div className="row gap-sm wrap">
-              <div className="subpanel light-panel"><strong>Suchauftrag</strong><div className="muted">{liveSearch.query || query}</div></div>
-              <div className="subpanel light-panel"><strong>Status</strong><div className="muted">{liveSearch.status || 'pending'}</div></div>
-              <div className="subpanel light-panel"><strong>Strategie</strong><div className="muted">{liveSearch.strategy || 'swiss_ai_live'}</div></div>
+            <div className="brand-status-metrics">
+              <span className="brand-chip brand-chip--blue"><Bot size={14} /> {liveSearch.status || 'pending'}</span>
+              <span className="brand-chip brand-chip--slate"><ScanSearch size={14} /> {liveSearch.strategy || 'swiss_ai_live'}</span>
             </div>
-            {pollMessage ? <p className="muted" style={{ marginTop: 12 }}>{pollMessage}</p> : null}
           </section>
         ) : null}
 
-        {searchError ? (
-          <section className="panel status-error">
-            <p className="no-margin">{searchError}</p>
-          </section>
-        ) : null}
+        {searchError ? <section className="brand-error-box brand-error-box--inline">{searchError}</section> : null}
 
         {!loading && !featured.length && query.trim() ? (
-          <section className="panel">
-            <div className="section-head">
+          <section className="brand-section-panel">
+            <div className="brand-section-head">
               <div>
                 <h2>Keine lokalen Resultate</h2>
-                <p className="muted no-margin">Starte die Live KI Suche jetzt sofort.</p>
+                <p>Starte die Live KI Suche jetzt sofort.</p>
               </div>
             </div>
-            <button className="btn btn-small" onClick={startPublicAiSearch}>KI Suche jetzt starten</button>
+            <button className="brand-primary-button brand-primary-button--compact" onClick={startPublicAiSearch}>KI Suche jetzt starten</button>
           </section>
         ) : null}
 
-        <section className="panel search-results-panel">
-          <div className="section-head">
+        <section className="brand-section-panel">
+          <div className="brand-section-head">
             <div>
               <h2>Ergebnisse</h2>
-              <p className="muted no-margin">Bestpreis, Deal Label und gefundene Shops.</p>
+              <p>Bestpreis, Deal Label und gefundene Shops – im selben Stil wie überall sonst.</p>
             </div>
           </div>
           {loading ? (
-            <div className="empty-state">
-              <h3>Suche laeuft</h3>
+            <div className="brand-empty-state">
+              <h3>Suche läuft</h3>
               <p>Die aktuellen Ergebnisse werden geladen.</p>
             </div>
           ) : featured.length ? (
-            <div className="results-list-pro">
+            <div className="brand-list-grid">
               {featured.map((item) => <SearchCard item={item} key={item.slug} />)}
             </div>
           ) : (
-            <div className="empty-state">
+            <div className="brand-empty-state">
               <h3>Noch keine Resultate</h3>
               <p>Starte eine Suche oder direkt die KI Suche.</p>
             </div>
