@@ -1,5 +1,5 @@
 FROM node:20-alpine
-WORKIDR /app/services/worker
+WORKDIR /app/services/worker
 COPY services/worker/package.json package.json
 RUN npm install --omit=dev
 COPY services/worker ./
