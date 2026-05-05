@@ -1,6 +1,6 @@
 const DEFAULT_FEEDBACK_ENDPOINT = '/api/kauvio/feedback';
 
-export const KAU VIO_FEEDBACK_TYPES = {
+export const KAUVIO_FEEDBACK_TYPES = {
   fits: 'fits',
   notRelevant: 'not_relevant',
   tooExpensive: 'too_expensive',
@@ -53,7 +53,7 @@ export function buildProductFeedbackPayload({ feedbackType, product, query, inte
 }
 
 export default {
-  KAU VIO_FEEDBACK_TYPES,
+  KAUVIO_FEEDBACK_TYPES,
   sendKauvioFeedback,
   buildProductFeedbackPayload,
 };
