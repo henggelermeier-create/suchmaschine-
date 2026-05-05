@@ -2,6 +2,7 @@ import { stripHtml, cleanCommerceQuery, queryTokens, normalizeSearchText, dedupe
 import { parseDigitecCards } from './shop_parsers/digitec.mjs'
 import { parseGalaxusCards } from './shop_parsers/galaxus.mjs'
 import { parseAlternateCards } from './shop_parsers/alternate.mjs'
+import { parseBigSwissShopCards } from './shop_parsers/big_swiss_shop.mjs'
 
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://ai_service:3010'
 const SEARCH_CANDIDATE_LIMIT = Number(process.env.SHOP_SEARCH_CANDIDATE_LIMIT || 28)
@@ -9,10 +10,19 @@ const SHOP_IMPORT_CARD_LIMIT = Number(process.env.SHOP_IMPORT_CARD_LIMIT || 20)
 const SHOP_PRODUCT_FETCH_TIMEOUT_MS = Number(process.env.SHOP_PRODUCT_FETCH_TIMEOUT_MS || 14000)
 const SHOP_AI_EXTRACT_LIMIT = Number(process.env.SHOP_AI_EXTRACT_LIMIT || 8)
 
+const BIG_SWISS_PROVIDERS = new Set([
+  'brack', 'brack_search_de', 'brack_suche_de',
+  'interdiscount', 'interdiscount_search_de',
+  'mediamarkt_ch', 'mediamarkt_search_de',
+  'microspot', 'microspot_suche_de',
+  'fust', 'melectronics', 'nettoshop', 'steg', 'conrad_ch', 'mobilezone'
+])
+
 function selectShopParser(provider = '') {
   if (provider === 'digitec') return parseDigitecCards
   if (provider === 'galaxus') return parseGalaxusCards
   if (provider === 'alternate_ch') return parseAlternateCards
+  if (BIG_SWISS_PROVIDERS.has(provider)) return parseBigSwissShopCards
   return null
 }
 
@@ -54,7 +64,7 @@ function extractSearchSignals(html = '', query = '') {
 
 function getCandidatesForProvider(html = '', url = '', query = '', provider = '') {
   const parser = selectShopParser(provider)
-  return parser ? parser(html, url, query) : parseGenericShopCandidates(html, url, query, provider)
+  return parser ? parser(html, url, query, provider) : parseGenericShopCandidates(html, url, query, provider)
 }
 
 function scoreSearchHtml(html = '', searchUrl = '', query = '', provider = '') {
@@ -88,6 +98,7 @@ async function resolveShopSearchContext({ task, source, swissSource, fetchText, 
   const homepageUrl = swissSource?.base_url || (source.seed_value && /^https?:\/\//i.test(source.seed_value) ? source.seed_value : null)
   const candidates = []
 
+  if (source.seed_value && /^https?:\/\//i.test(source.seed_value)) candidates.push({ url: source.seed_value, reason: 'source_seed_url', method: 'GET' })
   if (swissSource?.search_url_template) candidates.push({ url: swissSource.search_url_template.replace('{query}', encodeURIComponent(query)), reason: 'configured_template', method: 'GET' })
 
   let homepageHtml = null
