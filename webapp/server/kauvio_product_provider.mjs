@@ -64,6 +64,103 @@ function buildWhereClause({ tokens, intent, startIndex = 1 }) {
   };
 }
 
+const KAUVIO_CANONICAL_PRODUCTS_SQL = ({ where, limitParam }) => `
+  SELECT
+    id,
+    title,
+    brand,
+    category,
+    price,
+    currency,
+    merchant,
+    shop,
+    url,
+    image,
+    description,
+    availability,
+    in_stock,
+    rating,
+    reviews_count,
+    return_policy,
+    warranty,
+    trust_score,
+    avg_90d_price,
+    previous_price,
+    ai_summary,
+    canonical_product_id,
+    canonical_key,
+    offer_count,
+    offers,
+    best_offer
+  FROM (
+    SELECT
+      cp.id AS id,
+      cp.id AS canonical_product_id,
+      cp.canonical_key,
+      cp.title,
+      cp.brand,
+      cp.category,
+      MIN(o.price) FILTER (WHERE o.price IS NOT NULL) AS price,
+      COALESCE(MIN(o.currency), 'CHF') AS currency,
+      (ARRAY_AGG(o.merchant ORDER BY o.price ASC NULLS LAST))[1] AS merchant,
+      (ARRAY_AGG(o.merchant ORDER BY o.price ASC NULLS LAST))[1] AS shop,
+      (ARRAY_AGG(o.product_url ORDER BY o.price ASC NULLS LAST))[1] AS url,
+      NULL::text AS image,
+      cp.payload->>'description' AS description,
+      NULL::text AS availability,
+      TRUE AS in_stock,
+      NULL::numeric AS rating,
+      NULL::integer AS reviews_count,
+      NULL::text AS return_policy,
+      NULL::text AS warranty,
+      NULL::numeric AS trust_score,
+      NULL::numeric AS avg_90d_price,
+      NULL::numeric AS previous_price,
+      cp.payload->>'ai_summary' AS ai_summary,
+      COUNT(o.id)::integer AS offer_count,
+      COALESCE(
+        JSONB_AGG(
+          JSONB_BUILD_OBJECT(
+            'offer_id', o.id,
+            'merchant', o.merchant,
+            'price', o.price,
+            'currency', o.currency,
+            'url', o.product_url,
+            'match_score', o.match_score,
+            'payload', o.payload
+          ) ORDER BY o.price ASC NULLS LAST
+        ) FILTER (WHERE o.id IS NOT NULL),
+        '[]'::jsonb
+      ) AS offers,
+      (COALESCE(
+        JSONB_AGG(
+          JSONB_BUILD_OBJECT(
+            'offer_id', o.id,
+            'merchant', o.merchant,
+            'price', o.price,
+            'currency', o.currency,
+            'url', o.product_url,
+            'match_score', o.match_score,
+            'payload', o.payload
+          ) ORDER BY o.price ASC NULLS LAST
+        ) FILTER (WHERE o.id IS NOT NULL),
+        '[]'::jsonb
+      )->0) AS best_offer,
+      LOWER(CONCAT_WS(' ', cp.title, cp.brand, cp.category, cp.fingerprint, cp.payload::text, STRING_AGG(COALESCE(o.merchant, '') || ' ' || COALESCE(o.product_url, ''), ' '))) AS search_text
+    FROM kauvio_canonical_products cp
+    LEFT JOIN kauvio_canonical_product_offers o
+      ON o.canonical_product_id = cp.id
+    GROUP BY cp.id, cp.canonical_key, cp.title, cp.brand, cp.category, cp.fingerprint, cp.payload
+  ) canonical_candidates
+  ${where}
+  ORDER BY
+    offer_count DESC,
+    CASE WHEN price IS NULL THEN 1 ELSE 0 END,
+    price ASC NULLS LAST,
+    title ASC
+  LIMIT ${limitParam}
+`;
+
 const PRODUCT_SEARCH_SQL = ({ where, limitParam }) => `
   SELECT
     id,
@@ -288,6 +385,7 @@ export function createKauvioProductProvider({ pool, logger = console } = {}) {
 
       try {
         return await runFirstWorkingQuery(pool, [
+          KAUVIO_CANONICAL_PRODUCTS_SQL,
           PRODUCT_SEARCH_SQL,
           CANONICAL_PRODUCTS_SQL,
           SIMPLE_PRODUCTS_SQL,
