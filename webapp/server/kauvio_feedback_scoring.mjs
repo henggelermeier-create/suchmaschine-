@@ -16,17 +16,22 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function getProductFeedbackKey(product) {
-  return String(
-    product?.id ??
-    product?.product_id ??
-    product?.url ??
-    product?.product_url ??
-    product?.canonical_url ??
-    product?.title ??
-    product?.name ??
-    ''
-  ).trim();
+function getProductFeedbackTargets(product) {
+  return [
+    product?.id,
+    product?.product_id,
+    product?.url,
+    product?.product_url,
+    product?.canonical_url,
+    product?.title,
+    product?.name,
+  ]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+}
+
+function getPrimaryProductFeedbackKey(product) {
+  return getProductFeedbackTargets(product)[0] ?? '';
 }
 
 export function calculateKauvioFeedbackSignal(summary = {}, options = {}) {
@@ -88,8 +93,9 @@ export function applyKauvioFeedbackToProduct(product, feedbackSummary = null, op
 export function applyKauvioFeedbackToProducts(products = [], feedbackByTarget = new Map(), options = {}) {
   return products
     .map((product) => {
-      const key = getProductFeedbackKey(product);
-      const summary = feedbackByTarget.get(key) ?? feedbackByTarget.get(product?.title) ?? feedbackByTarget.get(product?.name) ?? null;
+      const summary = getProductFeedbackTargets(product)
+        .map((target) => feedbackByTarget.get(target))
+        .find(Boolean) ?? null;
       return applyKauvioFeedbackToProduct(product, summary, options);
     })
     .sort((a, b) => toNumber(b.kauvio_score) - toNumber(a.kauvio_score));
@@ -100,22 +106,23 @@ export async function loadKauvioFeedbackSummary(pool, products = []) {
     return new Map();
   }
 
-  const targets = [...new Set(products.map(getProductFeedbackKey).filter(Boolean))];
+  const targets = [...new Set(products.flatMap(getProductFeedbackTargets).filter(Boolean))];
   if (!targets.length) return new Map();
 
   const sql = `
     SELECT
       feedback_target,
       total_feedback,
-      positive_feedback,
-      negative_feedback,
+      fits_count,
+      great_deal_count,
+      not_relevant_count,
       too_expensive_count,
       wrong_category_count,
       bad_shop_count,
-      0::bigint AS fits_count,
-      0::bigint AS great_deal_count,
-      0::bigint AS not_relevant_count
-    FROM kauvio_search_feedback_summary
+      positive_feedback,
+      negative_feedback,
+      last_feedback_at
+    FROM kauvio_search_feedback_scoring
     WHERE feedback_target = ANY($1::text[])
   `;
 
@@ -142,10 +149,14 @@ export async function enrichProductsWithKauvioFeedback({ pool, products, logger 
   }
 }
 
+export { getPrimaryProductFeedbackKey, getProductFeedbackTargets };
+
 export default {
   calculateKauvioFeedbackSignal,
   applyKauvioFeedbackToProduct,
   applyKauvioFeedbackToProducts,
   loadKauvioFeedbackSummary,
   enrichProductsWithKauvioFeedback,
+  getPrimaryProductFeedbackKey,
+  getProductFeedbackTargets,
 };
