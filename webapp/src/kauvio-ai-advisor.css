@@ -1,0 +1,197 @@
+.kauvio-ai-advisor {
+  display: grid;
+  gap: 1.25rem;
+  padding: 1.25rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 24px;
+  background: linear-gradient(135deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96));
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
+}
+
+.kauvio-ai-advisor__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.kauvio-eyebrow,
+.kauvio-comparison-label {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #2563eb;
+}
+
+.kauvio-ai-advisor h2,
+.kauvio-ai-advisor h3 {
+  margin: 0;
+  color: #0f172a;
+}
+
+.kauvio-ai-advisor h2 {
+  font-size: clamp(1.35rem, 2vw, 2rem);
+  line-height: 1.15;
+}
+
+.kauvio-ai-advisor h3 {
+  font-size: 1rem;
+}
+
+.kauvio-intent-chip,
+.kauvio-score-pill,
+.kauvio-product-card__badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border-radius: 999px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.kauvio-intent-chip {
+  padding: 0.5rem 0.75rem;
+  color: #0f172a;
+  background: #e0f2fe;
+}
+
+.kauvio-score-pill {
+  padding: 0.25rem 0.55rem;
+  color: #064e3b;
+  background: #d1fae5;
+  font-size: 0.78rem;
+}
+
+.kauvio-advisor-section {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.kauvio-advisor-section--warning {
+  padding: 1rem;
+  border-radius: 18px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+}
+
+.kauvio-advisor-section--warning ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.kauvio-advisor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.85rem;
+}
+
+.kauvio-product-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.85rem;
+}
+
+.kauvio-product-card {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 0.9rem;
+  padding: 0.95rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+}
+
+.kauvio-product-card--hero {
+  grid-template-columns: minmax(100px, 160px) 1fr;
+  padding: 1.15rem;
+  border-color: rgba(37, 99, 235, 0.25);
+  background: linear-gradient(135deg, #ffffff, #eff6ff);
+}
+
+.kauvio-product-card--compact {
+  grid-template-columns: 72px 1fr;
+}
+
+.kauvio-product-card__image {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  border-radius: 16px;
+  background: #f8fafc;
+}
+
+.kauvio-product-card__body {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.kauvio-product-card__badge {
+  padding: 0.25rem 0.55rem;
+  color: #1e3a8a;
+  background: #dbeafe;
+  font-size: 0.76rem;
+}
+
+.kauvio-product-card__title {
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.kauvio-product-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.kauvio-product-link:hover {
+  text-decoration: underline;
+}
+
+.kauvio-product-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.65rem;
+  align-items: center;
+  color: #475569;
+  font-size: 0.9rem;
+}
+
+.kauvio-product-card__meta strong {
+  color: #0f172a;
+}
+
+.kauvio-reasons-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  color: #334155;
+  font-size: 0.9rem;
+}
+
+.kauvio-ai-advisor--loading,
+.kauvio-ai-advisor--error {
+  padding: 1rem;
+}
+
+.kauvio-ai-advisor--error {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+@media (max-width: 640px) {
+  .kauvio-ai-advisor__header {
+    flex-direction: column;
+  }
+
+  .kauvio-product-card,
+  .kauvio-product-card--hero,
+  .kauvio-product-card--compact {
+    grid-template-columns: 1fr;
+  }
+
+  .kauvio-product-card__image {
+    max-height: 180px;
+  }
+}
