@@ -53,8 +53,10 @@ function detailText(item = {}) {
 }
 function specsFor(item = {}) {
   const specs = item.specs_json || item.specs || {}
-  if (Array.isArray(specs)) return specs.slice(0, 8).map((value, index) => [`Info ${index + 1}`, value])
-  return Object.entries(specs).filter(([key, value]) => key !== 'category' && value != null && String(value).trim()).slice(0, 8)
+  if (Array.isArray(specs)) return specs.slice(0, 10).map((value, index) => [`Produktdetail ${index + 1}`, value])
+  return Object.entries(specs)
+    .filter(([key, value]) => !['category', 'quelle', 'source', 'vergleich', 'offer_count', 'shop_count'].includes(String(key).toLowerCase()) && value != null && String(value).trim())
+    .slice(0, 10)
 }
 function normalizedShopName(offer = {}) { return cleanText(offer.shop_name || offer.provider || offer.shop || 'Shop').replace(/_/g, ' ') }
 function sortedOffers(product = {}) {
@@ -89,27 +91,33 @@ function InlineProductGallery({ item }) {
   useEffect(() => { setSelected(images[0] || null) }, [item?.slug, images[0]])
   if (!images.length) return <div className="inline-detail-image placeholder"><ImageOff size={28} /></div>
   return (
-    <div className="inline-detail-gallery">
-      <div className="inline-detail-image"><img src={selected || images[0]} alt={productTitle(item)} /></div>
-      {images.length > 1 ? <div className="inline-detail-thumbs">{images.map((src, index) => <button key={`${src}-${index}`} className={src === selected ? 'active' : ''} onClick={() => setSelected(src)}><img src={src} alt={`Bild ${index + 1}`} /></button>)}</div> : null}
+    <div className="inline-detail-gallery product-image-gallery">
+      <div className="inline-detail-image product-image-canvas">
+        <img src={selected || images[0]} alt={productTitle(item)} />
+      </div>
+      <div className="image-gallery-meta">
+        <span>{images.length > 1 ? `${images.length} Produktbilder` : 'Produktbild'}</span>
+        <small>Bild vollständig anzeigen</small>
+      </div>
+      {images.length > 1 ? <div className="inline-detail-thumbs product-thumbs" aria-label="Weitere Produktbilder">{images.map((src, index) => <button key={`${src}-${index}`} className={src === selected ? 'active' : ''} onClick={() => setSelected(src)} aria-label={`Produktbild ${index + 1} anzeigen`}><img src={src} alt={`Produktbild ${index + 1}`} /></button>)}</div> : null}
     </div>
   )
 }
 
 function ProductOfferList({ product }) {
-  const offers = sortedOffers(product).slice(0, 12)
+  const offers = sortedOffers(product).slice(0, 20)
   const targetCondition = product.condition || 'new'
   const sameOffers = offers.filter((offer) => offer.is_same_condition !== false)
   const otherOffers = offers.filter((offer) => offer.is_same_condition === false)
   const best = sameOffers[0] || offers[0]
-  if (!offers.length) return <div className="detail-offers empty"><h4>Shop-Preise</h4><p>Noch kein Shop-Angebot gespeichert. Die KI sucht weiter.</p></div>
+  if (!offers.length) return <div className="detail-offers empty"><h4>Shop-Preisvergleich</h4><p>Noch kein Shop-Angebot gespeichert. Die KI sucht weiter.</p></div>
   const renderOffer = (offer, index, isOther = false) => {
     const isBest = !isOther && index === 0
     return <a key={`${offer.id || offer.shop_name || offer.provider}-${offer.condition || 'new'}-${index}`} className={isBest ? 'detail-offer-row best' : 'detail-offer-row'} href={offer.redirect_url || offer.product_url || offer.deeplink_url || '#'} target="_blank" rel="noreferrer"><span>{normalizedShopName(offer)}</span>{isBest ? <em>Bester Preis</em> : <small>{conditionLabel(offer.condition || targetCondition)}</small>}<b>{formatPrice(offer.price)}</b><ArrowRight size={15} /></a>
   }
   return (
-    <div className="detail-offers clean-offers">
-      <div className="offer-header-clean"><div><h4>Shop-Preise</h4><p>Vergleich nur für identischen Zustand: {conditionLabel(targetCondition)}.</p></div>{best ? <span className="best-price-pill">Bester {conditionLabel(targetCondition)} Preis {formatPrice(best.price)}</span> : null}</div>
+    <div className="detail-offers clean-offers price-compare-block">
+      <div className="offer-header-clean"><div><h4>Shop-Preisvergleich</h4><p>Alle gefundenen Shoppreise für dasselbe Produkt und denselben Zustand.</p></div>{best ? <span className="best-price-pill">Bester {conditionLabel(targetCondition)} Preis {formatPrice(best.price)}</span> : null}</div>
       {sameOffers.map((offer, index) => renderOffer(offer, index, false))}
       {otherOffers.length ? <div className="condition-warning">Andere Zustände separat: nicht direkt mit {conditionLabel(targetCondition)} vergleichen.</div> : null}
       {otherOffers.map((offer, index) => renderOffer(offer, index, true))}
@@ -137,12 +145,12 @@ function FocusedProductDetails({ item, onBack, loading }) {
       <div className="product-clean-info">
         <span className="chip tone-violet"><Camera size={14} /> Produktdetails</span>
         <h2>{title}</h2>
-        <p className="ai-summary-clean">{item.ai_summary || `KI Einschätzung: ${shopCount > 1 ? 'Vergleich vorhanden' : 'Ein Shop gefunden'} · bester sichtbarer Preis bei ${sourceLabel}.`}</p>
+        <p className="ai-summary-clean">{item.ai_summary || `KI Einschätzung: ${shopCount > 1 ? 'Preisvergleich vorhanden' : 'Ein Shop gefunden'} · bester sichtbarer Preis bei ${sourceLabel}.`}</p>
         <div className="focused-price-row"><strong>{formatPrice(bestPrice)}</strong><span>{shopCount} {shopCount === 1 ? 'Shop' : 'Shops'}</span><span>{conditionLabel(targetCondition)}</span><span>{sourceLabel}</span></div>
         {item.has_mixed_conditions ? <p className="condition-note">Hinweis: Generalüberholt, Occasion und Neuware werden getrennt verglichen.</p> : null}
-        {extra ? <p className="compact-product-text">{extra}</p> : null}
-        <button className="tech-toggle" onClick={() => setShowTech(!showTech)}>{showTech ? <ChevronUp size={16} /> : <ChevronDown size={16} />} Technische Details {showTech ? 'ausblenden' : 'anzeigen'}</button>
-        {showTech ? <div className="spec-grid compact-specs">{specEntries.length ? specEntries.map(([key, value]) => <div key={key}><b>{key}</b><span>{String(value)}</span></div>) : <><div><b>Zustand</b><span>{conditionLabel(targetCondition)}</span></div><div><b>Vergleich</b><span>{shopCount} Angebote</span></div></>}</div> : null}
+        {extra ? <p className="compact-product-text"><b>Produktbeschreibung</b><span>{extra}</span></p> : null}
+        <button className="tech-toggle" onClick={() => setShowTech(!showTech)}>{showTech ? <ChevronUp size={16} /> : <ChevronDown size={16} />} Produktdaten {showTech ? 'ausblenden' : 'anzeigen'}</button>
+        {showTech ? <div className="spec-grid compact-specs product-specs-only">{specEntries.length ? specEntries.map(([key, value]) => <div key={key}><b>{key}</b><span>{String(value)}</span></div>) : <div className="spec-empty"><b>Produktdaten</b><span>Noch keine technischen Produktdetails gespeichert. Die KI ergänzt diese, sobald sie vom Shop sauber gelesen werden.</span></div>}</div> : null}
         <ProductOfferList product={item} />
       </div>
     </section>
