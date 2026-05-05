@@ -1,4 +1,5 @@
-const DEFAULT_ENDPOINT = '/api/kauvio/ai-search';
+const DEFAULT_ENDPOINT = '/api/kauvio/ai-search-feedback';
+const FALLBACK_ENDPOINT = '/api/kauvio/ai-search';
 
 function buildUrl(endpoint, params = {}) {
   const url = new URL(endpoint, window.location.origin);
@@ -10,27 +11,7 @@ function buildUrl(endpoint, params = {}) {
   return url.toString();
 }
 
-export async function searchKauvioAiProducts(query, options = {}) {
-  const {
-    endpoint = DEFAULT_ENDPOINT,
-    limit = 24,
-    region = 'CH',
-    currency = 'CHF',
-    signal,
-  } = options;
-
-  const normalizedQuery = String(query ?? '').trim();
-  if (!normalizedQuery) {
-    return {
-      ok: false,
-      error: 'Bitte gib eine Suchanfrage ein.',
-      products: [],
-      advisor: null,
-      intent: null,
-      search_plan: null,
-    };
-  }
-
+async function requestKauvioSearch(endpoint, { normalizedQuery, limit, region, currency, signal }) {
   const response = await fetch(buildUrl(endpoint, {
     q: normalizedQuery,
     limit,
@@ -45,6 +26,49 @@ export async function searchKauvioAiProducts(query, options = {}) {
   });
 
   const payload = await response.json().catch(() => null);
+  return { response, payload };
+}
+
+export async function searchKauvioAiProducts(query, options = {}) {
+  const {
+    endpoint = DEFAULT_ENDPOINT,
+    fallbackEndpoint = FALLBACK_ENDPOINT,
+    limit = 24,
+    region = 'CH',
+    currency = 'CHF',
+    signal,
+    allowFallback = true,
+  } = options;
+
+  const normalizedQuery = String(query ?? '').trim();
+  if (!normalizedQuery) {
+    return {
+      ok: false,
+      error: 'Bitte gib eine Suchanfrage ein.',
+      products: [],
+      advisor: null,
+      intent: null,
+      search_plan: null,
+    };
+  }
+
+  let { response, payload } = await requestKauvioSearch(endpoint, {
+    normalizedQuery,
+    limit,
+    region,
+    currency,
+    signal,
+  });
+
+  if (!response.ok && allowFallback && fallbackEndpoint && response.status === 404) {
+    ({ response, payload } = await requestKauvioSearch(fallbackEndpoint, {
+      normalizedQuery,
+      limit,
+      region,
+      currency,
+      signal,
+    }));
+  }
 
   if (!response.ok) {
     return {
@@ -94,9 +118,25 @@ export function getKauvioProductUrl(product) {
   return product?.url ?? product?.product_url ?? product?.canonical_url ?? null;
 }
 
+export function getKauvioFeedbackLabel(product) {
+  const signal = product?.feedback_signal;
+  if (!signal || !signal.total_feedback) return null;
+
+  if (signal.score_delta > 0) {
+    return `Nutzer bestätigen: +${signal.score_delta} Score`;
+  }
+
+  if (signal.score_delta < 0) {
+    return `Nutzerhinweis: ${signal.score_delta} Score`;
+  }
+
+  return `${signal.total_feedback} Nutzerfeedbacks berücksichtigt`;
+}
+
 export default {
   searchKauvioAiProducts,
   formatKauvioPrice,
   getKauvioProductTitle,
   getKauvioProductUrl,
+  getKauvioFeedbackLabel,
 };

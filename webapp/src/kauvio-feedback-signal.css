@@ -1,0 +1,36 @@
+.kauvio-feedback-signal {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  width: fit-content;
+  margin-top: 0.35rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.kauvio-feedback-signal--positive {
+  color: #065f46;
+  background: #d1fae5;
+  border-color: #a7f3d0;
+}
+
+.kauvio-feedback-signal--negative {
+  color: #991b1b;
+  background: #fee2e2;
+  border-color: #fecaca;
+}
+
+.kauvio-feedback-signal--neutral {
+  color: #334155;
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.kauvio-feedback-signal__confidence {
+  opacity: 0.75;
+  font-weight: 700;
+}
