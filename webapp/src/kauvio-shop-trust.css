@@ -1,0 +1,38 @@
+.kauvio-shop-trust {
+  display: grid;
+  gap: 0.35rem;
+  width: fit-content;
+  margin-top: 0.45rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  font-size: 0.82rem;
+}
+
+.kauvio-shop-trust__label {
+  font-weight: 900;
+}
+
+.kauvio-shop-trust--trusted {
+  color: #065f46;
+  background: #d1fae5;
+  border-color: #a7f3d0;
+}
+
+.kauvio-shop-trust--check {
+  color: #92400e;
+  background: #fef3c7;
+  border-color: #fde68a;
+}
+
+.kauvio-shop-trust--risky {
+  color: #991b1b;
+  background: #fee2e2;
+  border-color: #fecaca;
+}
+
+.kauvio-shop-trust__warnings {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-weight: 700;
+}
