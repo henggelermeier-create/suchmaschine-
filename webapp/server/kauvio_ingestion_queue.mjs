@@ -3,6 +3,10 @@ import {
   ingestShopUrl,
   normalizeIngestedProduct,
 } from './kauvio_ai_ingestion.mjs';
+import {
+  detectSwissShopAdapter,
+  ingestSwissShopUrl,
+} from './kauvio_swiss_shop_adapters.mjs';
 
 const DEFAULT_WORKER_ID = `kauvio-worker-${process.pid}`;
 
@@ -29,10 +33,11 @@ export async function enqueueKauvioIngestionJob(pool, { jobType, payload, priori
 }
 
 export async function enqueueShopUrl(pool, url, options = {}) {
+  const adapter = detectSwissShopAdapter(url);
   return enqueueKauvioIngestionJob(pool, {
     jobType: 'shop_url',
-    payload: { url, ...options.payload },
-    priority: options.priority ?? 100,
+    payload: { url, adapter_id: adapter?.id ?? null, ...options.payload },
+    priority: options.priority ?? (adapter ? 80 : 100),
     maxAttempts: options.maxAttempts ?? 3,
   });
 }
@@ -84,6 +89,12 @@ export async function claimKauvioIngestionJob(pool, options = {}) {
 
 export async function saveKauvioIngestedProduct(pool, product) {
   const normalized = normalizeIngestedProduct(product);
+  const payload = {
+    ...normalized,
+    adapter_id: product.adapter_id ?? null,
+    adapter_name: product.adapter_name ?? null,
+    category_hints: product.category_hints ?? null,
+  };
 
   const result = await pool.query(`
     INSERT INTO kauvio_ingested_products (
@@ -131,7 +142,7 @@ export async function saveKauvioIngestedProduct(pool, product) {
     normalized.availability || null,
     normalized.domain || null,
     normalized.raw_source || null,
-    json(normalized),
+    json(payload),
   ]);
 
   return result.rows[0];
@@ -165,13 +176,19 @@ export async function processKauvioIngestionJob(pool, job, options = {}) {
   const payload = job.payload ?? {};
 
   if (job.job_type === 'shop_url') {
-    const product = await ingestShopUrl({
+    const hasAdapter = payload.adapter_id || detectSwissShopAdapter(payload.url);
+    const ingest = hasAdapter ? ingestSwissShopUrl : ingestShopUrl;
+    const product = await ingest({
       url: payload.url,
       fetcher: options.fetcher ?? fetch,
       storeProduct: (item) => saveKauvioIngestedProduct(pool, item),
       logger,
     });
-    await completeKauvioIngestionJob(pool, job, { products: 1, url: product.url });
+    await completeKauvioIngestionJob(pool, job, {
+      products: 1,
+      url: product.url,
+      adapter_id: product.adapter_id ?? null,
+    });
     return { products: [product] };
   }
 
