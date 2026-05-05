@@ -1,5 +1,5 @@
-const DEFAULT_ENDPOINT = '/api/kauvio/ai-search-feedback';
-const FALLBACK_ENDPOINT = '/api/kauvio/ai-search';
+const DEFAULT_ENDPOINT = '/api/kauvio/ai-search-trust';
+const FALLBACK_ENDPOINTS = ['/api/kauvio/ai-search-feedback', '/api/kauvio/ai-search'];
 
 function buildUrl(endpoint, params = {}) {
   const url = new URL(endpoint, window.location.origin);
@@ -26,13 +26,13 @@ async function requestKauvioSearch(endpoint, { normalizedQuery, limit, region, c
   });
 
   const payload = await response.json().catch(() => null);
-  return { response, payload };
+  return { response, payload, endpoint };
 }
 
 export async function searchKauvioAiProducts(query, options = {}) {
   const {
     endpoint = DEFAULT_ENDPOINT,
-    fallbackEndpoint = FALLBACK_ENDPOINT,
+    fallbackEndpoints = FALLBACK_ENDPOINTS,
     limit = 24,
     region = 'CH',
     currency = 'CHF',
@@ -52,23 +52,22 @@ export async function searchKauvioAiProducts(query, options = {}) {
     };
   }
 
-  let { response, payload } = await requestKauvioSearch(endpoint, {
-    normalizedQuery,
-    limit,
-    region,
-    currency,
-    signal,
-  });
+  const endpoints = allowFallback ? [endpoint, ...fallbackEndpoints] : [endpoint];
+  let lastResult = null;
 
-  if (!response.ok && allowFallback && fallbackEndpoint && response.status === 404) {
-    ({ response, payload } = await requestKauvioSearch(fallbackEndpoint, {
+  for (const candidateEndpoint of endpoints) {
+    lastResult = await requestKauvioSearch(candidateEndpoint, {
       normalizedQuery,
       limit,
       region,
       currency,
       signal,
-    }));
+    });
+
+    if (lastResult.response.ok || lastResult.response.status !== 404) break;
   }
+
+  const { response, payload, endpoint: usedEndpoint } = lastResult;
 
   if (!response.ok) {
     return {
@@ -79,6 +78,7 @@ export async function searchKauvioAiProducts(query, options = {}) {
       intent: null,
       search_plan: null,
       meta: payload?.meta,
+      endpoint: usedEndpoint,
     };
   }
 
@@ -90,6 +90,7 @@ export async function searchKauvioAiProducts(query, options = {}) {
     advisor: payload?.advisor ?? null,
     products: Array.isArray(payload?.products) ? payload.products : [],
     meta: payload?.meta ?? null,
+    endpoint: usedEndpoint,
   };
 }
 
@@ -133,10 +134,21 @@ export function getKauvioFeedbackLabel(product) {
   return `${signal.total_feedback} Nutzerfeedbacks berücksichtigt`;
 }
 
+export function getKauvioShopTrustLabel(product) {
+  const level = product?.shop_risk_level;
+  const score = product?.shop_trust_score;
+  if (!level || score === undefined || score === null) return null;
+
+  if (level === 'trusted') return `Vertrauenswürdiger Shop · ${score}/100`;
+  if (level === 'risky') return `Shop prüfen · ${score}/100`;
+  return `Shop-Signale prüfen · ${score}/100`;
+}
+
 export default {
   searchKauvioAiProducts,
   formatKauvioPrice,
   getKauvioProductTitle,
   getKauvioProductUrl,
   getKauvioFeedbackLabel,
+  getKauvioShopTrustLabel,
 };
