@@ -7,6 +7,7 @@ import {
   detectSwissShopAdapter,
   ingestSwissShopUrl,
 } from './kauvio_swiss_shop_adapters.mjs';
+import { matchAndStoreKauvioCanonicalProduct } from './kauvio_canonical_matching_store.mjs';
 
 const DEFAULT_WORKER_ID = `kauvio-worker-${process.pid}`;
 
@@ -148,6 +149,25 @@ export async function saveKauvioIngestedProduct(pool, product) {
   return result.rows[0];
 }
 
+export async function saveAndMatchKauvioIngestedProduct(pool, product, options = {}) {
+  const stored = await saveKauvioIngestedProduct(pool, product);
+  const productForMatching = {
+    ...product,
+    ...stored,
+    ingested_product_id: stored.id,
+  };
+
+  if (options.skipCanonicalMatching === true) {
+    return { stored, canonical: null };
+  }
+
+  const canonical = await matchAndStoreKauvioCanonicalProduct(pool, productForMatching, {
+    threshold: options.canonicalThreshold ?? 72,
+  });
+
+  return { stored, canonical };
+}
+
 export async function completeKauvioIngestionJob(pool, job, resultPayload = {}) {
   const result = await pool.query(`
     UPDATE kauvio_ingestion_jobs
@@ -178,27 +198,42 @@ export async function processKauvioIngestionJob(pool, job, options = {}) {
   if (job.job_type === 'shop_url') {
     const hasAdapter = payload.adapter_id || detectSwissShopAdapter(payload.url);
     const ingest = hasAdapter ? ingestSwissShopUrl : ingestShopUrl;
+    let canonicalResult = null;
     const product = await ingest({
       url: payload.url,
       fetcher: options.fetcher ?? fetch,
-      storeProduct: (item) => saveKauvioIngestedProduct(pool, item),
+      storeProduct: async (item) => {
+        const saved = await saveAndMatchKauvioIngestedProduct(pool, item, options);
+        canonicalResult = saved.canonical;
+        return saved.stored;
+      },
       logger,
     });
     await completeKauvioIngestionJob(pool, job, {
       products: 1,
       url: product.url,
       adapter_id: product.adapter_id ?? null,
+      canonical_product_id: canonicalResult?.canonical?.id ?? null,
+      canonical_matched: canonicalResult?.matched ?? false,
     });
-    return { products: [product] };
+    return { products: [product], canonicals: canonicalResult ? [canonicalResult] : [] };
   }
 
   if (job.job_type === 'search_results') {
+    const canonicalResults = [];
     const products = await ingestSearchResults({
       results: Array.isArray(payload.results) ? payload.results : [],
-      storeProduct: (item) => saveKauvioIngestedProduct(pool, item),
+      storeProduct: async (item) => {
+        const saved = await saveAndMatchKauvioIngestedProduct(pool, item, options);
+        if (saved.canonical) canonicalResults.push(saved.canonical);
+        return saved.stored;
+      },
     });
-    await completeKauvioIngestionJob(pool, job, { products: products.length });
-    return { products };
+    await completeKauvioIngestionJob(pool, job, {
+      products: products.length,
+      canonicals: canonicalResults.length,
+    });
+    return { products, canonicals: canonicalResults };
   }
 
   throw new Error(`Unsupported job type: ${job.job_type}`);
@@ -229,6 +264,7 @@ export default {
   enqueueSearchResults,
   claimKauvioIngestionJob,
   saveKauvioIngestedProduct,
+  saveAndMatchKauvioIngestedProduct,
   completeKauvioIngestionJob,
   failKauvioIngestionJob,
   processKauvioIngestionJob,
