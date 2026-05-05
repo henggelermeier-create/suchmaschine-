@@ -15,6 +15,8 @@ export function canonicalModelKey({ brand = '', title = '', specs = '' } = {}) {
     .trim()
 }
 
+const PRIORITY_SHOPS = ['toppreise', 'digitec', 'galaxus', 'brack', 'interdiscount', 'mediamarkt_ch', 'microspot', 'fust', 'melectronics', 'alternate_ch', 'mobilezone', 'conrad_ch', 'steg']
+
 export function inferIntent(query = '') {
   const q = normalizeSearchText(query)
   const tags = []
@@ -65,6 +67,7 @@ function sourceScore(source, intentTags = [], controlMap = new Map(), memory = n
   if (source.provider_kind === 'comparison_source') score += 20
   if (source.source_kind === 'comparison_search') score += 15
   if (source.source_kind === 'shop_catalog') score += 12
+  if (PRIORITY_SHOPS.includes(source.source_key)) score += 500
   score += Number(source.discovery_weight || 1) * 10
   score += Number(source.runtime_score || 1) * 12
   score += Number(source.manual_boost || 0) * 10
@@ -84,6 +87,7 @@ function sourceScore(source, intentTags = [], controlMap = new Map(), memory = n
 }
 
 function plannerReason(source, intentTags = [], controlMap = new Map(), memory = null) {
+  if (PRIORITY_SHOPS.includes(source.source_key)) return 'Pflichtquelle für Schweizer Produkt-Preisvergleich'
   const matches = (Array.isArray(source.categories_json) ? source.categories_json : []).filter((tag) => intentTags.includes(tag))
   const balance = controlMap.get('small_shop_balance')
   if (memory && Array.isArray(memory.last_source_keys_json) && memory.last_source_keys_json.includes(source.source_key)) return 'Früher erfolgreiche Quelle für ähnliche Suche'
@@ -102,25 +106,16 @@ function buildSeedValue(source, query) {
 }
 
 function pickDiverseSources(planned = [], controlMap = new Map()) {
-  const balance = controlMap.get('small_shop_balance')
-  const minSmall = balance?.is_enabled ? Number(balance.control_value_json?.min_small_shops || 4) : 3
   const maxSources = Number(process.env.AI_SEARCH_SOURCE_LIMIT || 18)
-  const sorted = [...planned].sort((a, b) => b.score - a.score)
   const selected = []
   const used = new Set()
-  const shopCatalog = sorted.filter((item) => item.source.source_kind === 'shop_catalog')
-  const comparison = sorted.filter((item) => item.source.source_kind !== 'shop_catalog')
-  const small = sorted.filter((item) => item.source.is_small_shop)
-
+  const sorted = [...planned].sort((a, b) => b.score - a.score)
   const push = (item) => {
     if (!item || selected.length >= maxSources || used.has(item.source.source_key)) return
     selected.push(item)
     used.add(item.source.source_key)
   }
-
-  comparison.slice(0, 3).forEach(push)
-  small.slice(0, minSmall).forEach(push)
-  shopCatalog.forEach(push)
+  for (const key of PRIORITY_SHOPS) push(sorted.find((item) => item.source.source_key === key))
   sorted.forEach(push)
   return selected.length ? selected : sorted.slice(0, maxSources)
 }
@@ -142,7 +137,7 @@ export async function enqueueLiveSearchTask(pool, query, requestedBy = 'public')
 
   const inserted = await pool.query(
     `INSERT INTO search_tasks(query, normalized_query, trigger_type, status, strategy, user_visible_note, task_priority, source_budget, requested_by)
-     VALUES ($1,$2,'query_miss','pending','swiss_ai_live','Wir bereiten gerade Live-Ergebnisse aus Schweizer Quellen auf.',60,40,$3)
+     VALUES ($1,$2,'query_miss','pending','swiss_product_price_compare','KI sucht echte Produkte und vergleicht Schweizer Shoppreise.',90,80,$3)
      RETURNING id, query, normalized_query, status, strategy, user_visible_note, result_count, discovered_count, imported_count, created_at`,
     [query, normalized, requestedBy]
   )
