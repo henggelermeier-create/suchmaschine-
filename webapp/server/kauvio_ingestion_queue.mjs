@@ -8,11 +8,17 @@ import {
   ingestSwissShopUrl,
 } from './kauvio_swiss_shop_adapters.mjs';
 import { matchAndStoreKauvioCanonicalProduct } from './kauvio_canonical_matching_store.mjs';
+import { recordKauvioCanonicalPriceSnapshot } from './kauvio_price_history.mjs';
 
 const DEFAULT_WORKER_ID = `kauvio-worker-${process.pid}`;
 
 function json(value) {
   return JSON.stringify(value ?? {});
+}
+
+function toNumber(value, fallback = null) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function sanitizeJobType(jobType) {
@@ -158,14 +164,29 @@ export async function saveAndMatchKauvioIngestedProduct(pool, product, options =
   };
 
   if (options.skipCanonicalMatching === true) {
-    return { stored, canonical: null };
+    return { stored, canonical: null, priceSnapshot: null };
   }
 
   const canonical = await matchAndStoreKauvioCanonicalProduct(pool, productForMatching, {
     threshold: options.canonicalThreshold ?? 72,
   });
 
-  return { stored, canonical };
+  let priceSnapshot = null;
+  const price = toNumber(productForMatching.price);
+  const canonicalProductId = canonical?.canonical?.id;
+  if (price !== null && canonicalProductId && options.skipPriceHistory !== true) {
+    priceSnapshot = await recordKauvioCanonicalPriceSnapshot(pool, {
+      canonical_product_id: canonicalProductId,
+      offer_id: canonical.offer?.id ?? null,
+      merchant: productForMatching.merchant,
+      product_url: productForMatching.url,
+      price,
+      currency: productForMatching.currency ?? 'CHF',
+      payload: productForMatching,
+    });
+  }
+
+  return { stored, canonical, priceSnapshot };
 }
 
 export async function completeKauvioIngestionJob(pool, job, resultPayload = {}) {
@@ -199,12 +220,14 @@ export async function processKauvioIngestionJob(pool, job, options = {}) {
     const hasAdapter = payload.adapter_id || detectSwissShopAdapter(payload.url);
     const ingest = hasAdapter ? ingestSwissShopUrl : ingestShopUrl;
     let canonicalResult = null;
+    let priceSnapshot = null;
     const product = await ingest({
       url: payload.url,
       fetcher: options.fetcher ?? fetch,
       storeProduct: async (item) => {
         const saved = await saveAndMatchKauvioIngestedProduct(pool, item, options);
         canonicalResult = saved.canonical;
+        priceSnapshot = saved.priceSnapshot;
         return saved.stored;
       },
       logger,
@@ -215,25 +238,29 @@ export async function processKauvioIngestionJob(pool, job, options = {}) {
       adapter_id: product.adapter_id ?? null,
       canonical_product_id: canonicalResult?.canonical?.id ?? null,
       canonical_matched: canonicalResult?.matched ?? false,
+      price_snapshot_id: priceSnapshot?.id ?? null,
     });
-    return { products: [product], canonicals: canonicalResult ? [canonicalResult] : [] };
+    return { products: [product], canonicals: canonicalResult ? [canonicalResult] : [], priceSnapshots: priceSnapshot ? [priceSnapshot] : [] };
   }
 
   if (job.job_type === 'search_results') {
     const canonicalResults = [];
+    const priceSnapshots = [];
     const products = await ingestSearchResults({
       results: Array.isArray(payload.results) ? payload.results : [],
       storeProduct: async (item) => {
         const saved = await saveAndMatchKauvioIngestedProduct(pool, item, options);
         if (saved.canonical) canonicalResults.push(saved.canonical);
+        if (saved.priceSnapshot) priceSnapshots.push(saved.priceSnapshot);
         return saved.stored;
       },
     });
     await completeKauvioIngestionJob(pool, job, {
       products: products.length,
       canonicals: canonicalResults.length,
+      price_snapshots: priceSnapshots.length,
     });
-    return { products, canonicals: canonicalResults };
+    return { products, canonicals: canonicalResults, priceSnapshots };
   }
 
   throw new Error(`Unsupported job type: ${job.job_type}`);
