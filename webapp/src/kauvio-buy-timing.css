@@ -1,0 +1,42 @@
+.kauvio-buy-timing {
+  display: grid;
+  gap: 0.2rem;
+  width: fit-content;
+  margin-top: 0.45rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  font-size: 0.85rem;
+}
+
+.kauvio-buy-timing strong {
+  font-size: 0.9rem;
+}
+
+.kauvio-buy-timing span {
+  max-width: 48rem;
+  color: inherit;
+}
+
+.kauvio-buy-timing small {
+  opacity: 0.75;
+  font-weight: 800;
+}
+
+.kauvio-buy-timing--buy {
+  color: #065f46;
+  background: #d1fae5;
+  border-color: #a7f3d0;
+}
+
+.kauvio-buy-timing--wait {
+  color: #991b1b;
+  background: #fee2e2;
+  border-color: #fecaca;
+}
+
+.kauvio-buy-timing--neutral {
+  color: #334155;
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
