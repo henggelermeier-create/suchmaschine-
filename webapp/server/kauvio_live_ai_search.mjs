@@ -1,4 +1,5 @@
 import { registerKauvioAiSearchRoutes } from './kauvio_ai_search_routes.mjs';
+import { registerKauvioPriceAwareSearchRoutes } from './kauvio_price_aware_search_routes.mjs';
 import { createKauvioProductProvider } from './kauvio_product_provider.mjs';
 
 const DEFAULT_DATABASE_ENV_KEYS = [
@@ -86,6 +87,7 @@ export async function registerKauvioLiveAiSearch(app, options = {}) {
   const {
     logger = console,
     registerSearchAlias = true,
+    registerPriceSearch = true,
     enabled = true,
   } = options;
 
@@ -95,6 +97,7 @@ export async function registerKauvioLiveAiSearch(app, options = {}) {
       enabled: false,
       reason: 'disabled_by_option',
       handler: null,
+      priceHandler: null,
       pool: null,
       ownsPool: false,
     };
@@ -107,6 +110,7 @@ export async function registerKauvioLiveAiSearch(app, options = {}) {
       enabled: false,
       reason: dependencies.disabledReason ?? 'missing_product_provider',
       handler: null,
+      priceHandler: null,
       pool: dependencies.pool,
       ownsPool: dependencies.ownsPool,
     };
@@ -118,14 +122,30 @@ export async function registerKauvioLiveAiSearch(app, options = {}) {
     logger,
   });
 
+  const priceHandler = registerPriceSearch
+    ? registerKauvioPriceAwareSearchRoutes(app, {
+      ...options,
+      pool: dependencies.pool,
+      productProvider: dependencies.productProvider,
+      registerSearchAlias,
+      logger,
+    })
+    : null;
+
   logger.info?.('Kauvio live AI search routes registered.', {
-    routes: ['/api/kauvio/ai-search', registerSearchAlias ? '/api/search/ai' : null].filter(Boolean),
+    routes: [
+      '/api/kauvio/ai-search',
+      registerPriceSearch ? '/api/kauvio/ai-search-price' : null,
+      registerSearchAlias ? '/api/search/ai' : null,
+      registerSearchAlias && registerPriceSearch ? '/api/search/ai-price' : null,
+    ].filter(Boolean),
     databaseEnvKey: dependencies.databaseEnvKey,
   });
 
   return {
     enabled: true,
     handler,
+    priceHandler,
     pool: dependencies.pool,
     ownsPool: dependencies.ownsPool,
     databaseEnvKey: dependencies.databaseEnvKey,

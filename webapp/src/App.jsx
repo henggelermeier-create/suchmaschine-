@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { BrandWordmark } from './Brand.jsx'
+import { KauvioSearchPage } from './KauvioSearchPage.jsx'
 import { Search, Trophy, Store, Bot, ScanSearch, ArrowRight, Layers3, Sparkles, Settings2, Activity, Database, BarChart3, Zap, ImageOff, Gauge, Radio, BrainCircuit } from 'lucide-react'
 
 const ADMIN_TOKEN_KEY = 'kauvio_admin_token'
@@ -89,7 +90,7 @@ export default function App() {
   const [route, setRoute] = useState(routeNow())
   useEffect(() => { const onHash = () => setRoute(routeNow()); window.addEventListener('hashchange', onHash); return () => window.removeEventListener('hashchange', onHash) }, [])
   if (route.startsWith('/product/')) return <div className="shell"><Header /><ProductPage slug={route.replace('/product/', '')} /></div>
-  if (route.startsWith('/search')) return <div className="shell"><Header /><SearchPage route={route} /></div>
+  if (route.startsWith('/search')) return <div className="shell"><Header /><KauvioSearchPage initialQuery={parseSearchRoute(route)} /></div>
   if (route.startsWith('/admin')) return <div className="shell"><Header /><AdminPage /></div>
   return <div className="shell"><Header /></div>
 }
