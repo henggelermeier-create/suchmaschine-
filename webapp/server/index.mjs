@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url'
 import { ensureCoreSchema } from '../../database/ensure_schema.mjs'
 import { normalizeDbUrl } from '../../database/normalize_db_url.mjs'
 import { enqueueLiveSearchTask } from './ai_search_runtime.mjs'
+import { activateKauvioServerFeatures } from './kauvio_server_activation.mjs'
 import {
   fetchCanonicalProductBySlug,
   fetchCanonicalSearchResults,
@@ -70,6 +71,9 @@ async function buildSystemHealth() {
   await add('swiss_sources', 'SELECT COUNT(*)::int AS c FROM swiss_sources')
   await add('web_discovery_results', 'SELECT COUNT(*)::int AS c FROM web_discovery_results')
   await add('ai_seed_candidates', 'SELECT COUNT(*)::int AS c FROM ai_seed_candidates')
+  await add('kauvio_canonical_products', 'SELECT COUNT(*)::int AS c FROM kauvio_canonical_products')
+  await add('kauvio_canonical_product_offers', 'SELECT COUNT(*)::int AS c FROM kauvio_canonical_product_offers')
+  await add('kauvio_canonical_price_history', 'SELECT COUNT(*)::int AS c FROM kauvio_canonical_price_history')
   return checks
 }
 async function getAiControls() { const result = await pool.query(`SELECT control_key, is_enabled, control_value_json, description, updated_by, updated_at FROM ai_runtime_controls ORDER BY control_key ASC`).catch(() => ({ rows: [] })); return result.rows }
@@ -111,6 +115,16 @@ app.get('/api/admin/search-requests', auth, async (_req, res) => { const items =
 app.get('/api/admin/web-discovery-results', auth, async (_req, res) => { const items = await pool.query(`SELECT id, query, source_domain, page_url, result_title, result_rank, discovered_shop, discovered_product, updated_at FROM web_discovery_results ORDER BY updated_at DESC LIMIT 40`).catch(() => ({ rows: [] })); res.json({ items: items.rows }) })
 app.get('/api/admin/ai/controls', auth, async (_req, res) => res.json({ items: await getAiControls() }))
 app.get('/api/admin/swiss-sources', auth, async (_req, res) => res.json({ items: await getSwissSourcesAdmin() }))
+
+const kauvioActivation = await activateKauvioServerFeatures(app, {
+  pool,
+  logger: console,
+  enabled: process.env.KAUVIO_AI_SEARCH_ENABLED,
+  registerSearchAlias: process.env.KAUVIO_AI_SEARCH_ALIAS_ENABLED,
+  registerPriceSearch: process.env.KAUVIO_PRICE_SEARCH_ENABLED,
+})
+
+console.log('kauvio ai search activation', kauvioActivation.config)
 
 app.use(express.static(distDir))
 app.get('*', (req, res) => { if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' }); res.sendFile(path.join(distDir, 'index.html')) })
