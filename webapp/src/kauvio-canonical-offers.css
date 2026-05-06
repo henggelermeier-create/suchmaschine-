@@ -1,0 +1,143 @@
+.kauvio-canonical-offers {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 18px;
+  background: #f8fafc;
+}
+
+.kauvio-canonical-offers__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.kauvio-canonical-offers__eyebrow {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #2563eb;
+}
+
+.kauvio-canonical-offers h4 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 0.98rem;
+}
+
+.kauvio-canonical-offers__best {
+  display: grid;
+  gap: 0.15rem;
+  text-align: right;
+  color: #0f172a;
+}
+
+.kauvio-canonical-offers__best span {
+  font-size: 0.72rem;
+  color: #64748b;
+  font-weight: 800;
+}
+
+.kauvio-canonical-offers__best strong {
+  font-size: 1.05rem;
+}
+
+.kauvio-offer-table {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.kauvio-offer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.kauvio-offer-row__merchant {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.kauvio-offer-row__merchant strong {
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kauvio-offer-row__merchant span {
+  color: #047857;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.kauvio-offer-row__price {
+  color: #0f172a;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.kauvio-offer-row__action a,
+.kauvio-canonical-offers__toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.kauvio-offer-row__action a {
+  padding: 0.4rem 0.65rem;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 0.8rem;
+}
+
+.kauvio-offer-row__action span {
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.kauvio-canonical-offers__toggle {
+  width: fit-content;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+}
+
+.kauvio-canonical-offers__empty {
+  margin: 0;
+  color: #64748b;
+}
+
+@media (max-width: 640px) {
+  .kauvio-canonical-offers__header {
+    flex-direction: column;
+  }
+
+  .kauvio-canonical-offers__best {
+    text-align: left;
+  }
+
+  .kauvio-offer-row {
+    grid-template-columns: 1fr;
+  }
+
+  .kauvio-offer-row__action a {
+    width: fit-content;
+  }
+}
