@@ -1,0 +1,152 @@
+.kauvio-search-page {
+  display: grid;
+  gap: 1.5rem;
+  width: min(1180px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 2rem 0 4rem;
+}
+
+.kauvio-search-hero {
+  display: grid;
+  gap: 1rem;
+  padding: 2rem;
+  border-radius: 28px;
+  background: #f8fafc;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.08);
+}
+
+.kauvio-search-hero__eyebrow {
+  margin: 0;
+  color: #2563eb;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.kauvio-search-hero h1 {
+  max-width: 820px;
+  margin: 0;
+  color: #0f172a;
+  font-size: clamp(2rem, 5vw, 4rem);
+  line-height: 1;
+}
+
+.kauvio-search-hero p {
+  max-width: 720px;
+  margin: 0;
+  color: #475569;
+  font-size: 1.05rem;
+}
+
+.kauvio-search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  max-width: 760px;
+}
+
+.kauvio-search-form input {
+  min-height: 3.25rem;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 999px;
+  padding: 0 1.1rem;
+  font-size: 1rem;
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.kauvio-search-form button {
+  min-height: 3.25rem;
+  border: 0;
+  border-radius: 999px;
+  padding: 0 1.4rem;
+  background: #2563eb;
+  color: #ffffff;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.kauvio-search-form button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.kauvio-search-plan {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-radius: 20px;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+.kauvio-search-plan h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.kauvio-search-plan pre {
+  overflow: auto;
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.kauvio-search-results {
+  display: grid;
+  gap: 1rem;
+}
+
+.kauvio-search-results__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.kauvio-search-results__header h2 {
+  margin: 0;
+  color: #0f172a;
+}
+
+.kauvio-search-results__header span {
+  color: #64748b;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.kauvio-search-results__grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.kauvio-search-result {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 24px;
+  background: #ffffff;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.06);
+}
+
+.kauvio-result-enhancements {
+  display: grid;
+  gap: 0.55rem;
+}
+
+@media (max-width: 720px) {
+  .kauvio-search-form {
+    grid-template-columns: 1fr;
+  }
+
+  .kauvio-search-form button {
+    width: 100%;
+  }
+
+  .kauvio-search-results__header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

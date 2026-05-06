@@ -1,5 +1,5 @@
-const DEFAULT_ENDPOINT = '/api/kauvio/ai-search-trust';
-const FALLBACK_ENDPOINTS = ['/api/kauvio/ai-search-feedback', '/api/kauvio/ai-search'];
+const DEFAULT_ENDPOINT = '/api/kauvio/ai-search-price';
+const FALLBACK_ENDPOINTS = ['/api/kauvio/ai-search-trust', '/api/kauvio/ai-search-feedback', '/api/kauvio/ai-search'];
 
 function buildUrl(endpoint, params = {}) {
   const url = new URL(endpoint, window.location.origin);
@@ -116,7 +116,7 @@ export function getKauvioProductTitle(product) {
 }
 
 export function getKauvioProductUrl(product) {
-  return product?.url ?? product?.product_url ?? product?.canonical_url ?? null;
+  return product?.url ?? product?.product_url ?? product?.canonical_url ?? product?.best_offer?.url ?? null;
 }
 
 export function getKauvioFeedbackLabel(product) {
@@ -144,6 +144,16 @@ export function getKauvioShopTrustLabel(product) {
   return `Shop-Signale prüfen · ${score}/100`;
 }
 
+export function getKauvioBuyTimingLabel(product) {
+  const timing = product?.buy_timing;
+  if (!timing?.decision || timing.decision === 'unknown') return null;
+
+  if (timing.decision === 'buy_now') return 'Jetzt kaufen';
+  if (timing.decision === 'wait') return 'Besser warten';
+  if (timing.decision === 'neutral') return 'Normaler Preis';
+  return null;
+}
+
 export default {
   searchKauvioAiProducts,
   formatKauvioPrice,
@@ -151,4 +161,5 @@ export default {
   getKauvioProductUrl,
   getKauvioFeedbackLabel,
   getKauvioShopTrustLabel,
+  getKauvioBuyTimingLabel,
 };
